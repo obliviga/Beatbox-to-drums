@@ -259,30 +259,39 @@ for (const pad of els.pads) {
   });
 }
 
-/* ---------- mic button ---------- */
+/* ---------- mic session ---------- */
+
+async function startMicSession() {
+  setStatus('Requesting microphone…');
+  try {
+    await startMic();
+  } catch (err) {
+    stopMic();
+    els.micBtn.classList.remove('live');
+    els.micLabel.textContent = 'Start';
+    throw err;
+  }
+  els.micBtn.classList.add('live');
+  els.micBtn.setAttribute('aria-pressed', 'true');
+  els.micLabel.textContent = 'Stop';
+  setStatus('Listening — beatbox away!');
+}
+
+function stopMicSession() {
+  stopMic();
+  els.micBtn.classList.remove('live');
+  els.micBtn.setAttribute('aria-pressed', 'false');
+  els.micLabel.textContent = 'Start';
+  setStatus('Tap Start and allow microphone access');
+}
 
 els.micBtn.addEventListener('click', async () => {
   if (micBusy) return;
   micBusy = true;
   try {
-    if (!micOn) {
-      setStatus('Requesting microphone…');
-      await startMic();
-      els.micBtn.classList.add('live');
-      els.micBtn.setAttribute('aria-pressed', 'true');
-      els.micLabel.textContent = 'Stop';
-      setStatus('Listening — beatbox away!');
-    } else {
-      stopMic();
-      els.micBtn.classList.remove('live');
-      els.micBtn.setAttribute('aria-pressed', 'false');
-      els.micLabel.textContent = 'Start';
-      setStatus('Tap Start and allow microphone access');
-    }
+    if (!micOn) await startMicSession();
+    else stopMicSession();
   } catch (err) {
-    stopMic();
-    els.micBtn.classList.remove('live');
-    els.micLabel.textContent = 'Start';
     setStatus(friendlyMicError(err), true);
   } finally {
     micBusy = false;
@@ -366,11 +375,29 @@ els.metChk.addEventListener('change', () => {
 
 /* ---------- loop recorder ---------- */
 
-els.recBtn.addEventListener('click', () => {
+els.recBtn.addEventListener('click', async () => {
   ensureAudio();
   syncRecorderSettings();
-  if (recorder.state === 'idle') recorder.startRecord();
-  else if (recorder.state === 'armed' || recorder.state === 'recording') recorder.stopRecord();
+  // pressing Record during playback = stop the loop and re-take
+  if (recorder.state === 'playing') recorder.stopPlay();
+  if (recorder.state === 'idle') {
+    // Record should just work: bring the mic up if it isn't already
+    let micFailNote = null;
+    if (!micOn && !micBusy) {
+      micBusy = true;
+      try {
+        await startMicSession();
+      } catch (err) {
+        micFailNote = friendlyMicError(err);
+      } finally {
+        micBusy = false;
+      }
+    }
+    recorder.startRecord();
+    if (micFailNote) setStatus(`${micFailNote} Recording pad taps only.`, true);
+  } else if (recorder.state === 'armed' || recorder.state === 'recording') {
+    recorder.stopRecord();
+  }
 });
 
 els.playBtn.addEventListener('click', () => {
@@ -427,19 +454,26 @@ function onRecorderState(state) {
   } else if (state === 'playing') {
     setStatus('Playing loop');
   } else if (prevRecorderState === 'recording') {
-    // just stopped a take — report what the analysis found
-    if (recorder.grooveSource === 'auto') {
-      const bars = recorder.bars();
-      setStatus(`Auto-beat: detected ${recorder.loopBpm} BPM — ${bars}-bar loop. Nudge BPM to re-grid.`);
-      els.bpmInput.value = String(recorder.loopBpm);
-      saveSettings();
-    } else if (recorder.grooveSource === 'metronome') {
-      setStatus(`Loop locked to ${recorder.bars()} bar${recorder.bars() === 1 ? '' : 's'} at ${recorder.loopBpm} BPM`);
-    } else if (recorder.events.length) {
-      setStatus('No steady tempo detected — playing raw. Try 6+ hits with even timing.');
+    // just stopped a take — report what the analysis found, then let the
+    // beat speak for itself (auto-play)
+    if (!recorder.events.length) {
+      setStatus('No hits captured — is the mic on (red = live)? Beatbox close to it or tap the pads, then try again.', true);
     } else {
-      setStatus(micOn ? 'Listening — beatbox away!' : 'Tap Start and allow microphone access');
+      let summary;
+      if (recorder.grooveSource === 'auto') {
+        summary = `Auto-beat: ${recorder.loopBpm} BPM · ${recorder.bars()}-bar loop (nudge BPM to re-grid)`;
+        els.bpmInput.value = String(recorder.loopBpm);
+        saveSettings();
+      } else if (recorder.grooveSource === 'metronome') {
+        summary = `Loop locked to ${recorder.bars()} bar${recorder.bars() === 1 ? '' : 's'} at ${recorder.loopBpm} BPM`;
+      } else {
+        summary = 'No steady tempo detected — raw take (try 6+ hits with even timing)';
+      }
+      setStatus(summary);
+      autoPlay(summary);
     }
+  } else if (prevRecorderState === 'armed') {
+    setStatus('Count-in cancelled — nothing recorded. Press ● Record to try again.');
   } else {
     setStatus(micOn ? 'Listening — beatbox away!' : 'Tap Start and allow microphone access');
   }
@@ -449,8 +483,25 @@ function onRecorderState(state) {
   reflectStyleChips();
 }
 
+function autoPlay(summary) {
+  setTimeout(() => {
+    if (!recorder || recorder.state !== 'idle' || !recorder.events.length) return;
+    recorder.play(() => els.loopChk.checked);
+    if (recorder.state === 'playing') setStatus(`${summary} — playing ▶`);
+  }, 120);
+}
+
 function updateRecCount() {
-  if (!recorder || !recorder.events.length) {
+  if (!recorder || (recorder.state === 'armed')) {
+    els.recCount.textContent = recorder ? 'Get ready…' : 'No hits recorded';
+    return;
+  }
+  if (recorder.state === 'recording') {
+    const n = recorder.events.length;
+    els.recCount.textContent = n ? `${n} hit${n === 1 ? '' : 's'} — keep going…` : 'Recording — waiting for your first hit…';
+    return;
+  }
+  if (!recorder.events.length) {
     els.recCount.textContent = 'No hits recorded';
     return;
   }
@@ -468,7 +519,9 @@ function updateTransportUI() {
   const state = recorder ? recorder.state : 'idle';
   const hasEvents = !!(recorder && recorder.events.length);
 
-  els.recBtn.disabled = state === 'playing';
+  // Record stays available during playback: pressing it stops the loop
+  // and immediately starts a new take.
+  els.recBtn.disabled = false;
   els.recBtn.classList.toggle('recording', state === 'recording' || state === 'armed');
   els.recBtn.textContent = state === 'recording' ? '■ Stop' : state === 'armed' ? '■ Cancel' : '● Record';
 
@@ -515,6 +568,15 @@ els.debugChk.addEventListener('change', () => {
   meterLevel *= 0.88;
   const pct = Math.min(1, Math.sqrt(meterLevel * 6)) * 100;
   els.meterFill.style.width = `${pct}%`;
+
+  if (recorder && recorder.state === 'armed') {
+    // visible countdown — count-in clicks are inaudible on muted phones
+    const remaining = recorder.countInRemaining();
+    if (remaining !== null) {
+      const beats = Math.max(1, Math.ceil(remaining / (60 / recorder.bpm)));
+      setStatus(`Count-in — ${beats}…`);
+    }
+  }
 
   if (recorder) {
     const state = recorder.state;

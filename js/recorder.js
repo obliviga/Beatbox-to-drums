@@ -277,6 +277,12 @@ export class LoopRecorder {
     return this.state === 'recording' ? this.ctx.currentTime - this._recStart : 0;
   }
 
+  /** Seconds until recording actually starts (while counting in), else null. */
+  countInRemaining() {
+    if (this.state !== 'armed') return null;
+    return Math.max(0, this._recStart - this.ctx.currentTime);
+  }
+
   clear() {
     if (this.state !== 'idle') return;
     this.events = [];

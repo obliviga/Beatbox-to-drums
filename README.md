@@ -8,7 +8,7 @@ Make a **“B”** sound and a kick drum fires. **“Pss”** and you get a snar
 
 - 🎙️ **Live mic → drums** — real-time onset detection and hit classification (kick / snare / hi-hat) with velocity from how hard you hit
 - 🥁 **Six kits, zero samples** — Acoustic, 808, Trap, Electro, Lo-Fi, and Percussion, fully synthesized with the Web Audio API
-- ✨ **Auto-beat** — record freely with no metronome and no BPM setup: the tempo is detected from your hit timing, bar 1 anchors on your first kick, the loop locks to whole bars, and you can nudge the BPM afterwards to re-grid
+- ✨ **Auto-beat** — one button: Record starts the mic if needed; when you stop, the tempo is detected from your hit timing, bar 1 anchors on your first kick, the loop locks to whole bars and starts playing immediately. Nudge the BPM afterwards to re-grid
 - 🪜 **Beat style ladder** — non-destructive, from simple to complex: **Raw** (exactly as played) · **Tight** (snapped to 1/16s) · **Clean** (snapped + accidental doubles merged) · **Full** (adds hi-hats on 8ths, backbeat snares, bar-start kicks — a produced beat from your sketch)
 - 🔁 **Metronome mode** — optional 4-beat count-in with clicks, for when you want to record to a fixed grid
 - 📊 **Timeline** — see your loop on a three-lane grid with a live playhead
@@ -43,9 +43,9 @@ Then open `http://localhost:8000`, tap **Start**, allow the mic, and beatbox.
 
 Get close to the mic and keep sounds short and punchy. Turn on *Show detection details* to see exactly how your sounds are being read, and tune Sensitivity to your room.
 
-**Making a loop:** just hit *Record* and beatbox — no setup. When you stop, the app detects your tempo, locks the loop to whole bars (bar 1 starts on your first kick; anything you played before it wraps to the loop's end as a pickup), and plays it back at the selected **beat style**. Flip between Raw / Tight / Clean / Full any time — your original take is always kept. If the detected BPM isn't what you meant (e.g. it heard your 8ths as 16ths), nudge the BPM field and the loop re-grids. *⬇ WAV* renders the loop to a file.
+**Making a loop:** just hit *Record* and beatbox — no setup, and the mic starts automatically if it isn't on. When you stop, the app detects your tempo, locks the loop to whole bars (bar 1 starts on your first kick; anything you played before it wraps to the loop's end as a pickup), and **immediately starts playing it back** at the selected **beat style**. Flip between Raw / Tight / Clean / Full any time — your original take is always kept. If the detected BPM isn't what you meant (e.g. it heard your 8ths as 16ths), nudge the BPM field and the loop re-grids. Pressing *Record* during playback stops the loop and starts a fresh take. *⬇ WAV* renders the loop to a file.
 
-Prefer recording to a click? Enable *Metronome*, set a BPM, and Record gives you a 4-beat count-in first. If no steady tempo can be heard in a free take (it needs ~6+ hits with intentional timing), the take stays available raw.
+Prefer recording to a click? Enable *Metronome*, set a BPM, and Record gives you a 4-beat count-in first, with a visible countdown (handy when the phone is muted). Pressing the button during the count-in cancels without touching your previous loop. If no steady tempo can be heard in a free take (it needs ~6+ hits with intentional timing), the take stays available raw.
 
 ## How it works
 
