@@ -70,11 +70,19 @@
           <label class="bpm-field">BPM
             <input id="bpmInput" type="number" min="40" max="240" step="1" value="90" inputmode="numeric" />
           </label>
-          <label class="inline-toggle" title="Snap playback to a 1/16-note grid (metronome recordings only)">
-            <input id="quantChk" type="checkbox" /> Quantize
-          </label>
         </div>
-        <p class="hint-line">With the metronome on you get a 4-beat count-in and the loop locks to whole bars.</p>
+        <div class="style-row">
+          <span class="style-label">Beat style</span>
+          <div class="chips chips-sm" role="group" aria-label="Beat style">
+            <button class="chip style-chip" data-style="raw">Raw</button>
+            <button class="chip style-chip" data-style="tight">Tight</button>
+            <button class="chip style-chip active" data-style="clean">Clean</button>
+            <button class="chip style-chip" data-style="full">Full</button>
+          </div>
+        </div>
+        <p class="hint-line">Record freely and the tempo is auto-detected — your beat comes back quantized.
+        Raw = as played · Tight = snapped to 1/16s · Clean = doubles merged · Full = adds hats &amp; backbeat.
+        Metronome adds a 4-beat count-in and locks bars to the click.</p>
       </div>
 
       <div class="control-group">

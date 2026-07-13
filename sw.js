@@ -4,7 +4,7 @@
  * background so the next load picks up new deploys).
  */
 
-const CACHE = 'b2d-v1';
+const CACHE = 'b2d-v2';
 const ASSETS = [
   '.',
   'index.html',
@@ -13,6 +13,7 @@ const ASSETS = [
   'js/audio-engine.js',
   'js/classifier.js',
   'js/recorder.js',
+  'js/groove.js',
   'js/metronome.js',
   'js/timeline.js',
   'js/worklet/onset-processor.js',

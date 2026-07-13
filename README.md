@@ -2,14 +2,15 @@
 
 Beatbox into your phone's microphone and hear yourself as an actual drum kit — acoustic, 808, trap, electro, lo-fi, or percussion. Everything runs live in the browser: no app install, no server, no audio ever leaves your device.
 
-Make a **“B”** sound and a kick drum fires. **“Pss”** and you get a snare. **“Ts”** and a hi-hat plays. Record a bar-locked loop of your beat, quantize it, switch kits on it, and export it as a WAV for your DAW.
+Make a **“B”** sound and a kick drum fires. **“Pss”** and you get a snare. **“Ts”** and a hi-hat plays. Record a loop with zero setup — the app detects your tempo by itself and hands the beat back quantized — then switch kits on it and export it as a WAV for your DAW.
 
 ## Features
 
 - 🎙️ **Live mic → drums** — real-time onset detection and hit classification (kick / snare / hi-hat) with velocity from how hard you hit
 - 🥁 **Six kits, zero samples** — Acoustic, 808, Trap, Electro, Lo-Fi, and Percussion, fully synthesized with the Web Audio API
-- 🔁 **Loop recorder** — free-time, or metronome mode with a 4-beat count-in and loops that lock to whole bars
-- 🎯 **Quantize** — non-destructively snap playback to a 1/16 grid; mic latency is compensated at record time
+- ✨ **Auto-beat** — record freely with no metronome and no BPM setup: the tempo is detected from your hit timing, bar 1 anchors on your first kick, the loop locks to whole bars, and you can nudge the BPM afterwards to re-grid
+- 🪜 **Beat style ladder** — non-destructive, from simple to complex: **Raw** (exactly as played) · **Tight** (snapped to 1/16s) · **Clean** (snapped + accidental doubles merged) · **Full** (adds hi-hats on 8ths, backbeat snares, bar-start kicks — a produced beat from your sketch)
+- 🔁 **Metronome mode** — optional 4-beat count-in with clicks, for when you want to record to a fixed grid
 - 📊 **Timeline** — see your loop on a three-lane grid with a live playhead
 - 💾 **WAV export** — renders offline; bar-locked loops wrap their decay tails around so the file loops seamlessly in a DAW
 - 🔊 **Speaker guard** — briefly gates detection after each drum sound so speakers can't re-trigger the mic (for playing without headphones)
@@ -42,7 +43,9 @@ Then open `http://localhost:8000`, tap **Start**, allow the mic, and beatbox.
 
 Get close to the mic and keep sounds short and punchy. Turn on *Show detection details* to see exactly how your sounds are being read, and tune Sensitivity to your room.
 
-**Making a loop:** enable *Metronome*, set a BPM, hit *Record* — you get a 4-beat count-in, then clicks while you record. Stop whenever; the loop rounds to whole bars, and a hit just past your stop point wraps around to the downbeat. *Quantize* snaps playback to 1/16s. *⬇ WAV* renders the loop to a file.
+**Making a loop:** just hit *Record* and beatbox — no setup. When you stop, the app detects your tempo, locks the loop to whole bars (bar 1 starts on your first kick; anything you played before it wraps to the loop's end as a pickup), and plays it back at the selected **beat style**. Flip between Raw / Tight / Clean / Full any time — your original take is always kept. If the detected BPM isn't what you meant (e.g. it heard your 8ths as 16ths), nudge the BPM field and the loop re-grids. *⬇ WAV* renders the loop to a file.
+
+Prefer recording to a click? Enable *Metronome*, set a BPM, and Record gives you a 4-beat count-in first. If no steady tempo can be heard in a free take (it needs ~6+ hits with intentional timing), the take stays available raw.
 
 ## How it works
 
@@ -62,7 +65,8 @@ mic ──► AudioWorklet onset detector ──► ~21 ms attack window
 1. **Onset detection** (`js/worklet/onset-processor.js`) runs on the audio rendering thread in 128-sample blocks. A hit is a block whose RMS jumps above both an adaptive noise floor and the previous block (rising edge), gated by a refractory period so one hit can't double-trigger. Browser voice processing (echo cancellation, noise suppression, AGC) is disabled on the mic stream because it smears exactly the transients we're looking for.
 2. **Classification** (`js/classifier.js`) takes the first ~21 ms of the attack, applies a Hann window and a 2048-point FFT, and computes the spectral centroid, low/mid/high band ratios, and zero-crossing rate. A small rule tree maps those to a drum: bass-dominant and dark → kick, bright or noisy (sibilant) → hi-hat, broadband mid → snare.
 3. **Synthesis** (`js/audio-engine.js`) plays the matching voice from the selected kit — the 808 hat is the classic six-detuned-squares metal stack, the trap kick is a long saturated sub, the electro snare is a triple-burst clap. Voices get subtle per-instrument stereo placement and velocity from your input level.
-4. **Recording** (`js/recorder.js`) timestamps hits on the audio clock (compensating for the detection window), rounds metronome recordings up to whole bars with a grace window at the bar line, and re-schedules everything through the engine for playback. WAV export re-renders the loop through an `OfflineAudioContext` and folds post-loop decay back onto the loop start so exports cycle seamlessly.
+4. **Tempo detection** (`js/groove.js`) needs no audio — just your hit times. Every candidate pulse is scored with circular statistics: map hit times onto a circle whose circumference is the candidate step; if the hits sit on that grid, their phases cluster and the resultant vector is long. The best largest step becomes the sixteenth note (octave-folded into a musical range), and the grid phase falls out of the same math. Three gates keep random timing from producing a fake grid — resultant length, grid inliers, and inter-onset-interval consistency (real rhythms space hits near whole multiples of the pulse). The thresholds were tuned by Monte-Carlo simulation: ~5% false positives on 12 random hits while accepting ≥99.5% of patterns with ±20–30 ms of human jitter.
+5. **Recording** (`js/recorder.js`) timestamps hits on the audio clock (compensating for the detection window), feeds both free and metronome takes through the same groove pipeline, and derives the four style levels non-destructively — Clean merges same-slot doubles, Full generates hats/backbeat/downbeat kicks using the velocities of your own playing. WAV export re-renders the loop through an `OfflineAudioContext` and folds post-loop decay back onto the loop start so exports cycle seamlessly.
 
 End-to-end latency is roughly the 21 ms capture window plus the audio output buffer — tight enough to feel playable.
 
@@ -82,8 +86,8 @@ npm install     # only needed for the browser smoke test
 npm run smoke   # drives the full app in headless Chromium with a fake mic
 ```
 
-- `test/unit/` covers the classifier (against synthesized kick/snare/hat waveforms), the onset detector (driven block-by-block, including an end-to-end capture→classify test), and the recorder's bar math, quantization, and WAV encoding.
-- `test/smoke.mjs` exercises the real thing: mic start, all kits, count-in recording, quantized looped playback, WAV download, persistence, and the service worker.
+- `test/unit/` covers the classifier (against synthesized kick/snare/hat waveforms), the onset detector (driven block-by-block, including an end-to-end capture→classify test), the groove analysis (tempo detection with jitter, pickup wrapping, style ladder, random-timing rejection), and the recorder's bar math and WAV encoding.
+- `test/smoke.mjs` exercises the real thing: mic start, all kits, auto-beat detection from timed taps, the style ladder, re-gridding, count-in recording, WAV download, persistence, and the service worker.
 - CI (`.github/workflows/ci.yml`) runs the unit tests on every push and PR.
 
 ## Project layout
@@ -94,7 +98,8 @@ css/style.css                  mobile-first dark UI
 js/main.js                     wiring: mic, pads, kits, recorder, timeline, PWA
 js/classifier.js               FFT + spectral features + rule classifier
 js/audio-engine.js             six synthesized drum kits + metronome click
-js/recorder.js                 loop recorder, quantize, WAV encode/render
+js/groove.js                   tempo detection + grid fitting + beat styles
+js/recorder.js                 loop recorder, WAV encode/render
 js/metronome.js                look-ahead click scheduler
 js/timeline.js                 canvas loop view
 js/worklet/onset-processor.js  audio-thread onset detector

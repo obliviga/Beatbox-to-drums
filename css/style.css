@@ -269,6 +269,16 @@ input[type="number"]:disabled { opacity: 0.4; }
 
 .hint-line { margin: 0; color: #565d73; font-size: 0.78rem; line-height: 1.4; }
 
+.style-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.style-label { color: var(--text-dim); font-size: 0.9rem; }
+.chips-sm .chip { padding: 6px 12px; font-size: 0.82rem; }
+.chip:disabled { opacity: 0.35; cursor: default; }
+
 /* Timeline */
 .timeline-wrap {
   background: var(--bg-card-2);

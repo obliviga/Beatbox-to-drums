@@ -3,14 +3,15 @@
  *
  * Pipeline: mic → AudioWorklet onset detector → attack window →
  * classifier (kick/snare/hat) → DrumEngine synth voice.
- * Plus: kits, sensitivity, speaker guard, metronome + quantized loop
- * recorder, timeline view, WAV export, keyboard shortcuts, settings
+ * Plus: kits, sensitivity, speaker guard, loop recorder with auto tempo
+ * detection and a beat-style ladder (raw/tight/clean/full), metronome
+ * mode, timeline view, WAV export, keyboard shortcuts, settings
  * persistence, and PWA registration.
  */
 
 import { DrumEngine, KIT_NAMES } from './audio-engine.js';
 import { analyzeHit, classifyHit } from './classifier.js';
-import { LoopRecorder, renderLoopWav } from './recorder.js';
+import { LoopRecorder, renderLoopWav, STYLE_LEVELS } from './recorder.js';
 import { Metronome } from './metronome.js';
 import { Timeline } from './timeline.js';
 
@@ -23,12 +24,12 @@ const els = {
   statusText: document.getElementById('statusText'),
   meterFill: document.getElementById('meterFill'),
   pads: Array.from(document.querySelectorAll('.pad')),
-  chips: Array.from(document.querySelectorAll('.chip')),
+  chips: Array.from(document.querySelectorAll('.chip[data-kit]')),
+  styleChips: Array.from(document.querySelectorAll('.style-chip')),
   sensSlider: document.getElementById('sensSlider'),
   guardChk: document.getElementById('guardChk'),
   bpmInput: document.getElementById('bpmInput'),
   metChk: document.getElementById('metChk'),
-  quantChk: document.getElementById('quantChk'),
   recBtn: document.getElementById('recBtn'),
   playBtn: document.getElementById('playBtn'),
   loopChk: document.getElementById('loopChk'),
@@ -52,9 +53,11 @@ let micOn = false;
 let micBusy = false;
 
 let kitName = 'acoustic';
+let styleLevel = 'clean';
 let sensitivity = 0.65;
 let speakerGuard = false;
 let meterLevel = 0;
+let prevRecorderState = 'idle';
 
 const timeline = new Timeline(els.timelineCanvas);
 
@@ -64,29 +67,30 @@ function loadSettings() {
   let s = {};
   try { s = JSON.parse(localStorage.getItem(SETTINGS_KEY)) || {}; } catch { /* fresh start */ }
   if (KIT_NAMES.includes(s.kit)) kitName = s.kit;
+  if (STYLE_LEVELS.includes(s.styleLevel)) styleLevel = s.styleLevel;
   if (typeof s.sensitivity === 'number') sensitivity = Math.min(1, Math.max(0, s.sensitivity));
   if (typeof s.speakerGuard === 'boolean') speakerGuard = s.speakerGuard;
   els.sensSlider.value = String(Math.round(sensitivity * 100));
   els.guardChk.checked = speakerGuard;
   if (typeof s.bpm === 'number') els.bpmInput.value = String(clampBpm(s.bpm));
   if (typeof s.metronomeOn === 'boolean') els.metChk.checked = s.metronomeOn;
-  if (typeof s.quantizeOn === 'boolean') els.quantChk.checked = s.quantizeOn;
   if (typeof s.debug === 'boolean') {
     els.debugChk.checked = s.debug;
     els.debugLine.hidden = !s.debug;
   }
   for (const c of els.chips) c.classList.toggle('active', c.dataset.kit === kitName);
+  reflectStyleChips();
 }
 
 function saveSettings() {
   try {
     localStorage.setItem(SETTINGS_KEY, JSON.stringify({
       kit: kitName,
+      styleLevel,
       sensitivity,
       speakerGuard,
       bpm: clampBpm(Number(els.bpmInput.value)),
       metronomeOn: els.metChk.checked,
-      quantizeOn: els.quantChk.checked,
       debug: els.debugChk.checked,
     }));
   } catch { /* storage unavailable (private mode) — fine */ }
@@ -116,6 +120,7 @@ function ensureAudio() {
       },
       onStateChange: onRecorderState,
     });
+    recorder.setStyle(styleLevel);
     syncRecorderSettings();
   }
   if (ctx.state === 'suspended') ctx.resume();
@@ -126,7 +131,6 @@ function syncRecorderSettings() {
   if (!recorder) return;
   recorder.bpm = clampBpm(Number(els.bpmInput.value));
   recorder.metronomeOn = els.metChk.checked;
-  recorder.quantizeOn = els.quantChk.checked;
 }
 
 async function startMic() {
@@ -300,7 +304,7 @@ function setStatus(text, isError = false) {
   els.statusText.classList.toggle('error', isError);
 }
 
-/* ---------- kit chips, sensitivity, guard, groove ---------- */
+/* ---------- kit chips, style chips, sensitivity, guard, groove ---------- */
 
 for (const chip of els.chips) {
   chip.addEventListener('click', () => {
@@ -309,6 +313,25 @@ for (const chip of els.chips) {
     for (const c of els.chips) c.classList.toggle('active', c === chip);
     saveSettings();
   });
+}
+
+for (const chip of els.styleChips) {
+  chip.addEventListener('click', () => {
+    styleLevel = chip.dataset.style;
+    if (recorder) recorder.setStyle(styleLevel);
+    reflectStyleChips();
+    updateRecCount();
+    saveSettings();
+  });
+}
+
+function reflectStyleChips() {
+  const hasGroove = !!(recorder && recorder.groove);
+  for (const c of els.styleChips) {
+    c.classList.toggle('active', c.dataset.style === styleLevel);
+    // without a grid there is nothing to snap to — only Raw applies
+    c.disabled = !hasGroove && c.dataset.style !== 'raw' && !!(recorder && recorder.events.length);
+  }
 }
 
 els.sensSlider.addEventListener('input', () => {
@@ -326,15 +349,17 @@ els.guardChk.addEventListener('change', () => {
 els.bpmInput.addEventListener('change', () => {
   els.bpmInput.value = String(clampBpm(Number(els.bpmInput.value)));
   syncRecorderSettings();
+  // nudging the BPM of an auto-detected loop re-fits its grid
+  if (recorder && recorder.grooveSource === 'auto' && recorder.state === 'idle') {
+    if (recorder.regrid(clampBpm(Number(els.bpmInput.value)))) {
+      setStatus(`Re-gridded at ${recorder.loopBpm} BPM — ${recorder.bars()}-bar loop`);
+      updateRecCount();
+    }
+  }
   saveSettings();
 });
 
 els.metChk.addEventListener('change', () => {
-  syncRecorderSettings();
-  saveSettings();
-});
-
-els.quantChk.addEventListener('change', () => {
   syncRecorderSettings();
   saveSettings();
 });
@@ -360,6 +385,7 @@ els.clearBtn.addEventListener('click', () => {
   recorder.clear();
   updateRecCount();
   updateTransportUI();
+  reflectStyleChips();
 });
 
 els.exportBtn.addEventListener('click', async () => {
@@ -371,13 +397,13 @@ els.exportBtn.addEventListener('click', async () => {
       events: recorder.playableEvents(),
       loopDur: recorder.loopDur,
       kit: kitName,
-      seamless: recorder.usedMetronome,
+      seamless: !!recorder.groove,
     });
     const blob = new Blob([wav], { type: 'audio/wav' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = recorder.usedMetronome
+    a.download = recorder.groove
       ? `beatbox-loop-${recorder.loopBpm}bpm-${kitName}.wav`
       : `beatbox-loop-${kitName}.wav`;
     document.body.appendChild(a);
@@ -395,23 +421,47 @@ els.exportBtn.addEventListener('click', async () => {
 
 function onRecorderState(state) {
   if (state === 'armed') {
-    setStatus(`Count-in — recording starts on the next “1”…`);
+    setStatus('Count-in — recording starts on the next “1”…');
   } else if (state === 'recording') {
     setStatus(micOn ? 'Recording — beatbox or tap the pads' : 'Recording — tap the pads (mic is off)');
   } else if (state === 'playing') {
     setStatus('Playing loop');
+  } else if (prevRecorderState === 'recording') {
+    // just stopped a take — report what the analysis found
+    if (recorder.grooveSource === 'auto') {
+      const bars = recorder.bars();
+      setStatus(`Auto-beat: detected ${recorder.loopBpm} BPM — ${bars}-bar loop. Nudge BPM to re-grid.`);
+      els.bpmInput.value = String(recorder.loopBpm);
+      saveSettings();
+    } else if (recorder.grooveSource === 'metronome') {
+      setStatus(`Loop locked to ${recorder.bars()} bar${recorder.bars() === 1 ? '' : 's'} at ${recorder.loopBpm} BPM`);
+    } else if (recorder.events.length) {
+      setStatus('No steady tempo detected — playing raw. Try 6+ hits with even timing.');
+    } else {
+      setStatus(micOn ? 'Listening — beatbox away!' : 'Tap Start and allow microphone access');
+    }
   } else {
     setStatus(micOn ? 'Listening — beatbox away!' : 'Tap Start and allow microphone access');
   }
+  prevRecorderState = state;
   updateRecCount();
   updateTransportUI();
+  reflectStyleChips();
 }
 
 function updateRecCount() {
-  const n = recorder ? recorder.events.length : 0;
-  els.recCount.textContent = n
-    ? `${n} hit${n === 1 ? '' : 's'} · loop ${recorder.loopDur ? recorder.loopDur.toFixed(2) + ' s' : '—'}`
-    : 'No hits recorded';
+  if (!recorder || !recorder.events.length) {
+    els.recCount.textContent = 'No hits recorded';
+    return;
+  }
+  const n = recorder.playableEvents().length;
+  const hits = `${n} hit${n === 1 ? '' : 's'}`;
+  if (recorder.groove) {
+    const bars = recorder.bars();
+    els.recCount.textContent = `${hits} · ${bars}-bar loop @ ${recorder.loopBpm} BPM`;
+  } else {
+    els.recCount.textContent = `${hits} · loop ${recorder.loopDur.toFixed(2)} s`;
+  }
 }
 
 function updateTransportUI() {
@@ -483,7 +533,7 @@ els.debugChk.addEventListener('change', () => {
         events: recorder.playableEvents(),
         dur: recorder.loopDur || 1,
         playhead: recorder.playheadPos(),
-        bpm: recorder.usedMetronome ? recorder.loopBpm : null,
+        bpm: recorder.groove ? recorder.loopBpm : null,
       });
     }
   } else {

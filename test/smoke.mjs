@@ -86,7 +86,6 @@ try {
   page.on('pageerror', (e) => errors.push(`pageerror: ${e.message}`));
   page.on('console', (m) => { if (m.type() === 'error') errors.push(`console.error: ${m.text()}`); });
 
-  step = 'load';
   await page.goto(base, { waitUntil: 'load' });
   await page.waitForTimeout(300);
 
@@ -127,19 +126,69 @@ try {
   await page.uncheck('#guardChk');
   console.log('✓ speaker guard toggles');
 
-  step = 'free-mode record/play';
+  // stop the mic so the fake device's pulsing tone can't inject stray hits
+  // into the timing-sensitive recordings below
+  step = 'mic stop';
+  await page.click('#micBtn');
+  console.log('✓ mic stopped');
+
+  step = 'auto-beat: free recording, steady 250 ms taps';
   await page.click('#recBtn');
-  for (const drum of ['kick', 'hat', 'snare', 'hat']) {
-    await page.dispatchEvent(`.pad[data-drum="${drum}"]`, 'pointerdown');
-    await page.waitForTimeout(130);
-  }
+  await page.evaluate(() => new Promise((resolve) => {
+    const seq = ['kick', 'hat', 'snare', 'hat', 'kick', 'hat', 'snare', 'hat'];
+    let i = 0;
+    const iv = setInterval(() => {
+      document.querySelector(`.pad[data-drum="${seq[i]}"]`)
+        .dispatchEvent(new PointerEvent('pointerdown'));
+      if (++i >= seq.length) {
+        clearInterval(iv);
+        setTimeout(resolve, 150);
+      }
+    }, 250);
+  }));
   await page.click('#recBtn');
-  const count1 = (await page.textContent('#recCount')).trim();
-  check(/\d+ hits/.test(count1), `unexpected rec count: ${count1}`);
-  await page.uncheck('#loopChk');
+  const bpmDetected = Number(await page.$eval('#bpmInput', (el) => el.value));
+  check(Math.abs(bpmDetected - 120) <= 5, `expected ~120 BPM, got ${bpmDetected}`);
+  const autoCount = (await page.textContent('#recCount')).trim();
+  check(/-bar loop @ \d+ BPM/.test(autoCount), `no bar-locked loop: ${autoCount}`);
+  console.log(`✓ auto-beat detected ${bpmDetected} BPM (${autoCount})`);
+
+  step = 'beat style ladder';
+  const hitCount = async () => Number((await page.textContent('#recCount')).match(/(\d+) hit/)[1]);
+  await page.click('.style-chip[data-style="raw"]');
+  const rawHits = await hitCount();
+  await page.click('.style-chip[data-style="clean"]');
+  const cleanHits = await hitCount();
+  await page.click('.style-chip[data-style="full"]');
+  const fullHits = await hitCount();
+  check(cleanHits <= rawHits, `clean (${cleanHits}) should be ≤ raw (${rawHits})`);
+  check(fullHits > cleanHits, `full (${fullHits}) should add hits over clean (${cleanHits})`);
+  console.log(`✓ style ladder: raw ${rawHits} → clean ${cleanHits} → full ${fullHits} hits`);
+
+  step = 'looped playback of the auto-beat';
+  await page.check('#loopChk');
   await page.click('#playBtn');
-  await page.waitForFunction(() => document.getElementById('playBtn').textContent.includes('Play'), null, { timeout: 8000 });
-  console.log(`✓ free-mode loop recorded (${count1}) and played through`);
+  await page.waitForTimeout(2500); // 1 bar @120 = 2 s — must wrap at least once
+  check((await page.textContent('#playBtn')).includes('Stop'), 'loop did not keep playing');
+  await page.click('#playBtn');
+  console.log('✓ auto-beat loops and stops on demand');
+
+  step = 're-grid via BPM nudge';
+  await page.fill('#bpmInput', '60');
+  await page.dispatchEvent('#bpmInput', 'change');
+  const regridCount = (await page.textContent('#recCount')).trim();
+  check(/@ 60 BPM/.test(regridCount), `regrid failed: ${regridCount}`);
+  console.log(`✓ re-gridded at 60 BPM (${regridCount})`);
+
+  step = 'WAV export';
+  const dlPromise = page.waitForEvent('download', { timeout: 15000 });
+  await page.click('#exportBtn');
+  const download = await dlPromise;
+  const wavPath = await download.path();
+  const head = await readFile(wavPath);
+  check(head.subarray(0, 4).toString() === 'RIFF' && head.subarray(8, 12).toString() === 'WAVE', 'not a WAV file');
+  check(/beatbox-loop-\d+bpm-/.test(download.suggestedFilename()), `filename: ${download.suggestedFilename()}`);
+  console.log(`✓ WAV export: ${download.suggestedFilename()} (${head.length} bytes)`);
 
   step = 'metronome record with count-in';
   await page.fill('#bpmInput', '240'); // fast count-in for the test
@@ -153,42 +202,24 @@ try {
     await page.waitForTimeout(140);
   }
   await page.click('#recBtn');
-  const loopInfo = (await page.textContent('#recCount')).trim();
-  check(/loop \d/.test(loopInfo), `no loop duration shown: ${loopInfo}`);
-  console.log(`✓ metronome record with count-in (${loopInfo})`);
-
-  step = 'quantized looped playback';
-  await page.check('#quantChk');
-  await page.check('#loopChk');
-  await page.click('#playBtn');
-  await page.waitForTimeout(2500); // let it wrap at least once (1 bar = 1 s @240)
-  const stillPlaying = (await page.textContent('#playBtn')).includes('Stop');
-  check(stillPlaying, 'loop did not keep playing');
-  await page.click('#playBtn');
-  console.log('✓ quantized looped playback wraps and stops on demand');
-
-  step = 'WAV export';
-  const dlPromise = page.waitForEvent('download', { timeout: 15000 });
-  await page.click('#exportBtn');
-  const download = await dlPromise;
-  const wavPath = await download.path();
-  const head = await readFile(wavPath);
-  check(head.subarray(0, 4).toString() === 'RIFF' && head.subarray(8, 12).toString() === 'WAVE', 'not a WAV file');
-  check(head.length > 1000, `WAV suspiciously small: ${head.length}`);
-  console.log(`✓ WAV export: ${download.suggestedFilename()} (${head.length} bytes)`);
+  const metCount = (await page.textContent('#recCount')).trim();
+  check(/-bar loop @ 240 BPM/.test(metCount), `metronome loop not locked: ${metCount}`);
+  console.log(`✓ metronome record with count-in (${metCount})`);
 
   step = 'settings persistence';
   await page.click('.chip[data-kit="trap"]');
   await page.reload({ waitUntil: 'load' });
   await page.waitForTimeout(300);
-  const activeKit = await page.$eval('.chip.active', (el) => el.dataset.kit);
+  const activeKit = await page.$eval('.chip[data-kit].active', (el) => el.dataset.kit);
   check(activeKit === 'trap', `kit not persisted: ${activeKit}`);
   const bpmVal = await page.$eval('#bpmInput', (el) => el.value);
   check(bpmVal === '240', `bpm not persisted: ${bpmVal}`);
-  console.log('✓ settings persist across reload');
+  const activeStyle = await page.$eval('.style-chip.active', (el) => el.dataset.style);
+  check(activeStyle === 'full', `style not persisted: ${activeStyle}`);
+  console.log('✓ settings persist across reload (kit, BPM, beat style)');
 
-  step = 'mic stop';
-  await page.click('#micBtn'); // was reset by reload? click Start then Stop to exercise both paths
+  step = 'mic restart after reload';
+  await page.click('#micBtn');
   await page.waitForFunction(() => document.getElementById('statusText').textContent.includes('Listening'), null, { timeout: 5000 });
   await page.click('#micBtn');
   console.log('✓ mic start/stop after reload');

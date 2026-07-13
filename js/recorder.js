@@ -1,27 +1,26 @@
 /**
  * LoopRecorder — records hits (from the mic or pads) and plays them back.
  *
- * Two recording modes:
- *   free      — no metronome; the loop is simply "last hit + a tail"
- *   metronome — 4-beat count-in, clicks while recording, and the loop
- *               length rounds to whole 4/4 bars so it cycles musically.
- *               Quantize (non-destructive) snaps playback to a 1/16 grid.
+ * Two recording modes, both feeding the same groove pipeline (js/groove.js):
+ *   free      — no metronome, no setup. On stop, the tempo is auto-detected
+ *               from your hit timing, bar 1 anchors on your first kick, and
+ *               the loop locks to whole bars. The BPM can be nudged
+ *               afterwards (regrid).
+ *   metronome — 4-beat count-in and clicks while recording; the grid is
+ *               known exactly, and the loop rounds to whole 4/4 bars.
+ *
+ * Playback renders one of four style levels, non-destructively derived
+ * from the raw take: raw | tight | clean | full (see groove.js).
+ * If tempo detection fails on a free take, the loop falls back to
+ * "last hit + tail" and only the raw style is available.
  *
  * DOM-free: main.js owns the UI and subscribes via onHit/onStateChange.
- * Pure helpers (quantizeTime, encodeWavPCM16, renderLoopWav) are exported
- * separately so they can be unit-tested in Node.
  */
 
 import { DrumEngine } from './audio-engine.js';
+import { detectGrid, buildGroove, STYLE_LEVELS, SLOTS_PER_BAR } from './groove.js';
 
 export const BEATS_PER_BAR = 4;
-export const QUANT_DIVISION = 4; // 4 subdivisions per beat = 1/16 notes
-
-/** Snap a time (seconds) to the nearest 1/16-note at the given tempo. */
-export function quantizeTime(t, bpm, division = QUANT_DIVISION) {
-  const step = 60 / bpm / division;
-  return Math.round(t / step) * step;
-}
 
 /** Encode float channel data as a 16-bit PCM WAV file. */
 export function encodeWavPCM16(channels, sampleRate) {
@@ -62,8 +61,8 @@ export function encodeWavPCM16(channels, sampleRate) {
 
 /**
  * Render a loop offline and return a WAV ArrayBuffer.
- * In bar-synced mode the decay ringing past the loop end is wrapped back
- * onto the loop start, so the file loops seamlessly in a DAW.
+ * With `seamless`, decay ringing past the loop end is wrapped back onto
+ * the loop start, so the file loops perfectly in a DAW.
  */
 export async function renderLoopWav({ events, loopDur, kit, seamless = false, sampleRate = 44100 }) {
   const OAC = globalThis.OfflineAudioContext || globalThis.webkitOfflineAudioContext;
@@ -113,14 +112,17 @@ export class LoopRecorder {
 
     /** @type {'idle'|'armed'|'recording'|'playing'} */
     this.state = 'idle';
-    this.events = [];
+    this.events = []; // the raw take, timestamps relative to recording start
     this.bpm = 90;
     this.metronomeOn = false;
-    this.quantizeOn = false;
+    this.styleLevel = 'clean';
 
+    /** Groove of the current loop, or null (no loop / detection failed). */
+    this.groove = null;
+    /** @type {'auto'|'metronome'|null} */
+    this.grooveSource = null;
     this.loopDur = 0;
     this.loopBpm = 90;
-    this.usedMetronome = false;
 
     this._recStart = 0;
     this._armTimer = null;
@@ -131,6 +133,10 @@ export class LoopRecorder {
   _set(state) {
     this.state = state;
     this.onStateChange(state);
+  }
+
+  setStyle(level) {
+    if (STYLE_LEVELS.includes(level)) this.styleLevel = level;
   }
 
   startRecord() {
@@ -164,20 +170,52 @@ export class LoopRecorder {
     }
     if (this.state !== 'recording') return;
     const rawDur = Math.max(0.5, this.ctx.currentTime - this._recStart);
-    this.usedMetronome = this.metronomeOn;
-    this.loopBpm = this.bpm;
-    if (this.usedMetronome) {
+
+    if (this.metronomeOn) {
       const bar = (BEATS_PER_BAR * 60) / this.bpm;
       // Grace window: stopping shortly after a bar line doesn't add a bar
       const bars = Math.max(1, Math.ceil((rawDur - 0.2 * bar) / bar));
-      this.loopDur = bars * bar;
-      // Hits in the overshoot were meant as the next pass's downbeat
-      this.events = this.events.map((e) => ({ ...e, t: e.t % this.loopDur }));
+      const grid = {
+        bpm: this.bpm,
+        sixteenth: 15 / this.bpm,
+        offset: 0,
+        anchorT: 0, // t=0 IS the downbeat — that's what the count-in is for
+        confidence: 1,
+      };
+      this.groove = buildGroove(this.events, grid, { anchor: 'none', bars });
+      this.grooveSource = this.groove ? 'metronome' : null;
+      this.loopBpm = this.bpm;
+      this.loopDur = this.groove ? this.groove.loopDur : bars * bar;
     } else {
-      const lastT = this.events.reduce((m, e) => Math.max(m, e.t), 0);
-      this.loopDur = lastT + 0.7;
+      const grid = detectGrid(this.events);
+      this.groove = grid ? buildGroove(this.events, grid) : null;
+      if (this.groove) {
+        this.grooveSource = 'auto';
+        this.loopBpm = this.groove.bpm;
+        this.loopDur = this.groove.loopDur;
+      } else {
+        // couldn't hear a steady pulse — keep the take playable as-is
+        this.grooveSource = null;
+        const lastT = this.events.reduce((m, e) => Math.max(m, e.t), 0);
+        this.loopDur = lastT + 0.7;
+      }
     }
     this._set('idle');
+  }
+
+  /**
+   * Re-fit the grid of an auto-detected loop at a user-chosen tempo.
+   * @returns {boolean} true if the loop was re-gridded
+   */
+  regrid(bpm) {
+    if (this.grooveSource !== 'auto' || this.state !== 'idle' || !this.events.length) return false;
+    const grid = detectGrid(this.events, { bpm });
+    const groove = buildGroove(this.events, grid);
+    if (!groove) return false;
+    this.groove = groove;
+    this.loopBpm = groove.bpm;
+    this.loopDur = groove.loopDur;
+    return true;
   }
 
   /** Called by main for every performed hit; ignored unless recording. */
@@ -187,13 +225,14 @@ export class LoopRecorder {
     this.events.push({ t, type, velocity });
   }
 
-  /** Events as they will actually play (quantized if applicable). */
+  /** Events as they will actually play (current style level). */
   playableEvents() {
-    if (!(this.quantizeOn && this.usedMetronome)) return this.events.slice();
-    return this.events.map((e) => ({
-      ...e,
-      t: quantizeTime(e.t, this.loopBpm) % this.loopDur,
-    }));
+    if (!this.groove) return this.events.slice();
+    return this.groove.styles[this.styleLevel] || this.groove.styles.raw;
+  }
+
+  bars() {
+    return this.groove ? this.groove.bars : null;
   }
 
   play(isLoopOn = () => false) {
@@ -241,6 +280,10 @@ export class LoopRecorder {
   clear() {
     if (this.state !== 'idle') return;
     this.events = [];
+    this.groove = null;
+    this.grooveSource = null;
     this.loopDur = 0;
   }
 }
+
+export { STYLE_LEVELS, SLOTS_PER_BAR };
