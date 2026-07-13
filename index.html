@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="theme-color" content="#0e0f13" />
+  <meta name="description" content="Beatbox into your microphone and hear it as a real drum kit, an 808, or a synth kit — all in your browser." />
+  <title>Beatbox → Drums</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🥁</text></svg>" />
+  <link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+  <main class="app">
+    <header class="header">
+      <h1>Beatbox <span class="arrow">→</span> Drums</h1>
+      <p class="tagline">Beatbox into your mic — hear it back as a real kit or a synth.</p>
+    </header>
+
+    <section class="mic-section">
+      <button id="micBtn" class="mic-btn" aria-pressed="false">
+        <span class="mic-icon">🎙️</span>
+        <span id="micLabel" class="mic-label">Start</span>
+      </button>
+      <div class="meter" aria-hidden="true"><div id="meterFill" class="meter-fill"></div></div>
+      <p id="statusText" class="status">Tap Start and allow microphone access</p>
+    </section>
+
+    <section class="pads" aria-label="Drum pads">
+      <button class="pad pad-kick" data-drum="kick">
+        <span class="pad-name">KICK</span>
+        <span class="pad-hint">“B”</span>
+      </button>
+      <button class="pad pad-snare" data-drum="snare">
+        <span class="pad-name">SNARE</span>
+        <span class="pad-hint">“Pss”</span>
+      </button>
+      <button class="pad pad-hat" data-drum="hat">
+        <span class="pad-name">HI-HAT</span>
+        <span class="pad-hint">“Ts”</span>
+      </button>
+    </section>
+
+    <section class="controls">
+      <div class="control-group">
+        <span class="control-label">Kit</span>
+        <div class="chips" role="group" aria-label="Drum kit">
+          <button class="chip active" data-kit="acoustic">Acoustic</button>
+          <button class="chip" data-kit="tr808">808</button>
+          <button class="chip" data-kit="electro">Electro</button>
+        </div>
+      </div>
+
+      <div class="control-group">
+        <label class="control-label" for="sensSlider">Sensitivity</label>
+        <input id="sensSlider" type="range" min="0" max="100" value="65" />
+      </div>
+
+      <div class="control-group">
+        <span class="control-label">Loop recorder</span>
+        <div class="transport">
+          <button id="recBtn" class="t-btn">● Record</button>
+          <button id="playBtn" class="t-btn" disabled>▶ Play</button>
+          <label class="loop-toggle"><input id="loopChk" type="checkbox" /> Loop</label>
+          <button id="clearBtn" class="t-btn" disabled>✕ Clear</button>
+        </div>
+        <p id="recCount" class="rec-count">No hits recorded</p>
+      </div>
+    </section>
+
+    <section class="tip">
+      <p>🎧 <strong>Use headphones</strong> — otherwise the speakers can re-trigger the mic.
+      Get close to the mic and keep sounds short and punchy:
+      <strong>“B”</strong> for kick, <strong>“Pss”</strong> for snare, <strong>“Ts”</strong> for hi-hat.</p>
+    </section>
+
+    <section class="debug-section">
+      <label class="debug-toggle"><input id="debugChk" type="checkbox" /> Show detection details</label>
+      <p id="debugLine" class="debug-line" hidden>—</p>
+    </section>
+
+    <footer class="footer">
+      <p>Runs entirely in your browser — no audio leaves your device.</p>
+    </footer>
+  </main>
+
+  <noscript><p style="padding:2rem;text-align:center">This app needs JavaScript (and a microphone) to run.</p></noscript>
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>
