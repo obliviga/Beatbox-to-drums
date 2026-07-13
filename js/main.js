@@ -240,9 +240,14 @@ function detectionLatency() {
 }
 
 function performHit(type, velocity, { features = null, fromMic = false } = {}) {
-  engine.trigger(type, { velocity });
+  const capturing = recorder && (recorder.state === 'recording' || recorder.state === 'armed');
+  // Recording is silent capture — the drums are only heard on ▶ Play.
+  // (Also means the speakers can't feed back into the take.)
+  if (!capturing) {
+    engine.trigger(type, { velocity });
+    suppressDetection();
+  }
   flashPad(type);
-  suppressDetection();
   recorder.recordHit(type, velocity, fromMic ? detectionLatency() : 0);
   updateRecCount();
   if (features && els.debugLine && !els.debugLine.hidden) {
@@ -293,13 +298,17 @@ async function startMicSession() {
   setStatus('Listening — beatbox away!');
 }
 
-function stopMicSession() {
+function stopMicQuiet() {
   stopMic();
   if (els.micBtn) {
     els.micBtn.classList.remove('live');
     els.micBtn.setAttribute('aria-pressed', 'false');
     if (els.micLabel) els.micLabel.textContent = 'Start';
   }
+}
+
+function stopMicSession() {
+  stopMicQuiet();
   setStatus('Press Record and beatbox — “B” kick · “Pss” snare · “Ts” hi-hat');
 }
 
@@ -480,10 +489,15 @@ if (els.exportBtn) {
 }
 
 function onRecorderState(state) {
+  // The mic is hot only while a take is being captured — release it as
+  // soon as recording ends so nothing can trigger between takes.
+  if (state === 'idle' && (prevRecorderState === 'recording' || prevRecorderState === 'armed') && micOn) {
+    stopMicQuiet();
+  }
   if (state === 'armed') {
     setStatus('Count-in — recording starts on the next “1”…');
   } else if (state === 'recording') {
-    setStatus(micOn ? 'Recording — beatbox now…' : 'Recording — mic unavailable');
+    setStatus(micOn ? 'Recording — beatbox now… (you’ll hear the drums on Play)' : 'Recording — mic unavailable');
   } else if (state === 'playing') {
     setStatus('Playing your drums ▶');
   } else if (prevRecorderState === 'recording') {

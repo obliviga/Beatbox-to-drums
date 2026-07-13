@@ -4,7 +4,7 @@
  * background so the next load picks up new deploys).
  */
 
-const CACHE = 'b2d-v4';
+const CACHE = 'b2d-v5';
 const ASSETS = [
   '.',
   'index.html',
