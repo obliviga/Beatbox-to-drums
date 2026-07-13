@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <meta name="theme-color" content="#0e0f13" />
-  <meta name="description" content="Beatbox into your microphone and hear it as a real drum kit, an 808, or a synth kit — all in your browser." />
+  <meta name="description" content="Beatbox into your microphone and hear it back as real drums — all in your browser." />
   <title>Beatbox → Drums</title>
   <link rel="manifest" href="manifest.json" />
   <link rel="icon" href="icons/icon-192.png" />
@@ -15,8 +15,31 @@
   <main class="app">
     <header class="header">
       <h1>Beatbox <span class="arrow">→</span> Drums</h1>
-      <p class="tagline">Beatbox into your mic — hear it back as a real kit or a synth.</p>
+      <p class="tagline">Record your beatbox. Hear it back as drums.</p>
     </header>
+
+    <section class="wave-section">
+      <div class="wave-wrap">
+        <canvas id="waveform" aria-label="Audio waveform"></canvas>
+      </div>
+      <p id="statusText" class="status" aria-live="polite">Press Record and beatbox — “B” kick · “Pss” snare · “Ts” hi-hat</p>
+    </section>
+
+    <section class="big-controls">
+      <button id="recBtn" class="big-btn rec">● Record</button>
+      <button id="playBtn" class="big-btn play" disabled>▶ Play</button>
+    </section>
+
+    <footer class="footer">
+      <p>Runs entirely in your browser — no audio leaves your device.</p>
+    </footer>
+
+    <!-- ================================================================
+         Features below are temporarily disabled to keep the UI minimal
+         while the core record→convert→play flow gets solid. The logic
+         behind them still exists (and is unit-tested) — uncomment a
+         section and js/main.js picks it up automatically.
+         ================================================================
 
     <section class="mic-section">
       <button id="micBtn" class="mic-btn" aria-pressed="false">
@@ -24,7 +47,6 @@
         <span id="micLabel" class="mic-label">Start</span>
       </button>
       <div class="meter" aria-hidden="true"><div id="meterFill" class="meter-fill"></div></div>
-      <p id="statusText" class="status" aria-live="polite">Tap Start and allow microphone access</p>
     </section>
 
     <section class="pads" aria-label="Drum pads">
@@ -80,7 +102,7 @@
             <button class="chip style-chip" data-style="full">Full</button>
           </div>
         </div>
-        <p class="hint-line">Record freely and the tempo is auto-detected — your beat comes back quantized.
+        <p class="hint-line">Record freely and the tempo is auto-detected.
         Raw = as played · Tight = snapped to 1/16s · Clean = doubles merged · Full = adds hats &amp; backbeat.
         Metronome adds a 4-beat count-in and locks bars to the click.</p>
       </div>
@@ -88,8 +110,6 @@
       <div class="control-group">
         <span class="control-label">Loop recorder</span>
         <div class="transport">
-          <button id="recBtn" class="t-btn">● Record</button>
-          <button id="playBtn" class="t-btn" disabled>▶ Play</button>
           <label class="loop-toggle"><input id="loopChk" type="checkbox" checked /> Loop</label>
           <button id="clearBtn" class="t-btn" disabled>✕ Clear</button>
           <button id="exportBtn" class="t-btn" disabled>⬇ WAV</button>
@@ -102,9 +122,7 @@
     </section>
 
     <section class="tip">
-      <p>🎧 <strong>Use headphones</strong> — or turn on <strong>Speaker guard</strong> so the speakers can't re-trigger the mic.
-      Get close to the mic and keep sounds short and punchy:
-      <strong>“B”</strong> for kick, <strong>“Pss”</strong> for snare, <strong>“Ts”</strong> for hi-hat.</p>
+      <p>🎧 <strong>Use headphones</strong> — or turn on <strong>Speaker guard</strong> so the speakers can't re-trigger the mic.</p>
     </section>
 
     <section class="debug-section">
@@ -112,9 +130,7 @@
       <p id="debugLine" class="debug-line" hidden>—</p>
     </section>
 
-    <footer class="footer">
-      <p>Runs entirely in your browser — no audio leaves your device.</p>
-    </footer>
+    ================================================================ -->
   </main>
 
   <noscript><p style="padding:2rem;text-align:center">This app needs JavaScript (and a microphone) to run.</p></noscript>

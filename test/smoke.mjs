@@ -1,10 +1,11 @@
 /**
- * Browser smoke test — drives the whole app in headless Chromium.
+ * Browser smoke test — drives the app in headless Chromium.
  *
- * Context A has a fake microphone (Chrome's fake device emits a pulsing
- * tone, which genuinely exercises the onset → classify → synth pipeline).
- * Context B force-denies getUserMedia, so recording tests are driven by
- * precisely-timed pad taps (deterministic) and the mic-denied paths run.
+ * The UI is currently minimal: Record → waveform → Play. Context A uses
+ * Chrome's fake microphone (a pulsing tone that genuinely exercises the
+ * onset → classify → synth pipeline). Context B force-denies getUserMedia
+ * and drives hits with precisely-timed keyboard events, covering the
+ * mic-less fallback and deterministic tempo detection.
  *
  * Usage:  npm install && npm run smoke
  * Env:    CHROME_PATH to point at a Chromium binary if autodetection fails.
@@ -37,7 +38,6 @@ async function findChromium() {
 const MIME = {
   '.html': 'text/html', '.css': 'text/css', '.js': 'text/javascript',
   '.mjs': 'text/javascript', '.json': 'application/json', '.png': 'image/png',
-  '.svg': 'image/svg+xml', '.wav': 'audio/wav',
 };
 
 function serve(rootDir) {
@@ -82,11 +82,16 @@ const wirePage = (page) => {
   page.on('console', (m) => { if (m.type() === 'error') errors.push(`console.error: ${m.text()}`); });
 };
 const statusOf = async (page) => (await page.textContent('#statusText')).trim();
-const countOf = async (page) => (await page.textContent('#recCount')).trim();
-const waitStatus = (page, re, timeout = 5000) =>
+const waitStatus = (page, re, timeout = 6000) =>
   page.waitForFunction((src) => new RegExp(src).test(document.getElementById('statusText').textContent), re.source, { timeout });
-const waitAutoPlay = (page) =>
-  page.waitForFunction(() => document.getElementById('playBtn').textContent.includes('Stop'), null, { timeout: 4000 });
+// count strongly-visible waveform bar pixels (bars are opaque; the center line is faint)
+const wavePixels = (page) => page.evaluate(() => {
+  const c = document.getElementById('waveform');
+  const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data;
+  let n = 0;
+  for (let i = 3; i < d.length; i += 4) if (d[i] > 80) n++;
+  return n;
+});
 
 try {
   /* ================= Context A: working (fake) microphone ================= */
@@ -96,6 +101,14 @@ try {
   await pageA.goto(base, { waitUntil: 'load' });
   await pageA.waitForTimeout(300);
 
+  step = 'A: minimal UI';
+  for (const sel of ['#micBtn', '.pad', '.chip', '#bpmInput', '#exportBtn', '#timeline', '#debugChk']) {
+    check((await pageA.$(sel)) === null, `${sel} should be hidden in the minimal UI`);
+  }
+  check((await pageA.$('#recBtn')) && (await pageA.$('#playBtn')) && (await pageA.$('#waveform')), 'core elements missing');
+  check(await pageA.$eval('#playBtn', (el) => el.disabled), 'Play should start disabled');
+  console.log('✓ minimal UI: just Record, waveform, Play');
+
   step = 'A: service worker';
   const swOk = await pageA.evaluate(() => Promise.race([
     navigator.serviceWorker.ready.then(() => true),
@@ -104,47 +117,37 @@ try {
   check(swOk, 'service worker did not become ready');
   console.log('✓ service worker registered');
 
-  step = 'A: mic start + detection';
-  await pageA.click('#micBtn');
-  await waitStatus(pageA, /Listening/);
-  await pageA.check('#debugChk');
-  await pageA.waitForTimeout(1200);
-  console.log(`✓ mic listening; fake-mic detection: ${(await pageA.textContent('#debugLine')).trim()}`);
-
-  step = 'A: pads + kits';
-  for (const kit of ['acoustic', 'tr808', 'trap', 'electro', 'lofi', 'perc']) {
-    await pageA.click(`.chip[data-kit="${kit}"]`);
-    for (const drum of ['kick', 'snare', 'hat']) {
-      await pageA.dispatchEvent(`.pad[data-drum="${drum}"]`, 'pointerdown');
-      await pageA.waitForTimeout(40);
-    }
-  }
-  console.log('✓ all 6 kits × 3 pads trigger cleanly');
-
-  step = 'A: keyboard + speaker guard';
-  await pageA.click('body', { position: { x: 5, y: 5 } });
-  for (const key of ['a', 's', 'd']) await pageA.keyboard.press(key);
-  await pageA.check('#guardChk');
-  await pageA.dispatchEvent('.pad[data-drum="kick"]', 'pointerdown');
-  await pageA.uncheck('#guardChk');
-  console.log('✓ keyboard pads + speaker guard');
-
-  step = 'A: hands-free record from mic, auto-play on stop';
-  await pageA.click('#recBtn'); // mic already on
-  await waitStatus(pageA, /Recording/);
-  await pageA.waitForTimeout(5000); // fake tone pulses = mic-driven hits
-  const during = await countOf(pageA);
-  check(/keep going/.test(during), `live counter missing: ${during}`);
+  step = 'A: record from mic with live waveform';
+  const idlePixels = await wavePixels(pageA);
   await pageA.click('#recBtn');
-  await waitAutoPlay(pageA);
-  check(/playing ▶/.test(await statusOf(pageA)), `no auto-play status: ${await statusOf(pageA)}`);
-  console.log(`✓ mic-only take auto-plays on stop (${await countOf(pageA)})`);
-  await pageA.click('#playBtn'); // stop playback
-  await pageA.click('#clearBtn');
-  await pageA.click('#micBtn'); // mic off
+  await waitStatus(pageA, /Recording — beatbox now/);
+  await pageA.waitForTimeout(4000); // fake tone pulses = mic-driven hits
+  const recPixels = await wavePixels(pageA);
+  check(recPixels > idlePixels + 200, `waveform not drawing (idle ${idlePixels} → rec ${recPixels})`);
+  console.log(`✓ mic auto-started; waveform is live (${recPixels} px of signal)`);
+
+  step = 'A: stop converts the take';
+  await pageA.click('#recBtn');
+  await waitStatus(pageA, /(Converted ✓|Captured \d+ hit).*press ▶ Play/);
+  check(!(await pageA.$eval('#playBtn', (el) => el.disabled)), 'Play should be enabled after a take');
+  console.log(`✓ stop converts and hands off to Play ("${await statusOf(pageA)}")`);
+
+  step = 'A: play the converted drums';
+  await pageA.click('#playBtn');
+  await waitStatus(pageA, /Playing your drums/);
+  check((await pageA.textContent('#playBtn')).includes('Stop'), 'Play should toggle to Stop');
+  await pageA.waitForTimeout(1200);
+
+  step = 'A: record during playback starts a re-take';
+  await pageA.click('#recBtn');
+  await waitStatus(pageA, /Recording — beatbox now/);
+  await pageA.waitForTimeout(1500);
+  await pageA.click('#recBtn');
+  await waitStatus(pageA, /press ▶ Play/);
+  console.log('✓ playback, and Record-while-playing re-takes cleanly');
   await ctxA.close();
 
-  /* ============ Context B: microphone denied (deterministic taps) ============ */
+  /* ============ Context B: microphone denied (keyboard-driven hits) ============ */
   const ctxB = await browser.newContext();
   await ctxB.addInitScript(() => {
     if (navigator.mediaDevices) {
@@ -157,103 +160,40 @@ try {
   await pageB.goto(base, { waitUntil: 'load' });
   await pageB.waitForTimeout(300);
 
-  step = 'B: mic button reports denial';
-  await pageB.click('#micBtn');
-  await waitStatus(pageB, /denied/);
-  console.log('✓ denied mic is reported clearly');
-
-  step = 'B: record auto-tries the mic, falls back to pads-only';
+  step = 'B: record explains a missing mic';
   await pageB.click('#recBtn');
-  await waitStatus(pageB, /pad taps only/);
-  console.log('✓ record warns when the mic is unavailable');
+  await waitStatus(pageB, /denied.*Recording without the mic/s);
+  console.log('✓ denied mic is reported, recording continues without it');
 
-  step = 'B: auto-beat from timed taps + auto-play';
+  step = 'B: auto-beat from timed keyboard hits';
   await pageB.evaluate(() => new Promise((resolve) => {
-    const seq = ['kick', 'hat', 'snare', 'hat', 'kick', 'hat', 'snare', 'hat'];
+    const seq = ['a', 'd', 's', 'd', 'a', 'd', 's', 'd']; // kick hat snare hat ×2
     let i = 0;
     const iv = setInterval(() => {
-      document.querySelector(`.pad[data-drum="${seq[i]}"]`)
-        .dispatchEvent(new PointerEvent('pointerdown'));
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: seq[i] }));
       if (++i >= seq.length) { clearInterval(iv); setTimeout(resolve, 150); }
     }, 250);
   }));
   await pageB.click('#recBtn');
-  await waitAutoPlay(pageB);
-  const bpmDetected = Number(await pageB.$eval('#bpmInput', (el) => el.value));
-  check(Math.abs(bpmDetected - 120) <= 5, `expected ~120 BPM, got ${bpmDetected}`);
-  check(/-bar loop @ \d+ BPM/.test(await countOf(pageB)), `not bar-locked: ${await countOf(pageB)}`);
-  console.log(`✓ auto-beat detected ${bpmDetected} BPM and auto-played (${await countOf(pageB)})`);
-  await pageB.click('#playBtn'); // stop playback
+  await waitStatus(pageB, /Converted ✓ \d+ BPM/);
+  const bpm = Number((await statusOf(pageB)).match(/Converted ✓ (\d+) BPM/)[1]);
+  check(Math.abs(bpm - 120) <= 5, `expected ~120 BPM, got ${bpm}`);
+  console.log(`✓ converted at ${bpm} BPM ("${await statusOf(pageB)}")`);
 
-  step = 'B: beat style ladder';
-  const hitCount = async () => Number((await countOf(pageB)).match(/(\d+) hit/)[1]);
-  await pageB.click('.style-chip[data-style="raw"]');
-  const rawHits = await hitCount();
-  await pageB.click('.style-chip[data-style="clean"]');
-  const cleanHits = await hitCount();
-  await pageB.click('.style-chip[data-style="full"]');
-  const fullHits = await hitCount();
-  check(cleanHits <= rawHits, `clean (${cleanHits}) should be ≤ raw (${rawHits})`);
-  check(fullHits > cleanHits, `full (${fullHits}) should add hits over clean (${cleanHits})`);
-  console.log(`✓ style ladder: raw ${rawHits} → clean ${cleanHits} → full ${fullHits} hits`);
-
-  step = 'B: re-grid via BPM nudge';
-  await pageB.fill('#bpmInput', '60');
-  await pageB.dispatchEvent('#bpmInput', 'change');
-  check(/@ 60 BPM/.test(await countOf(pageB)), `regrid failed: ${await countOf(pageB)}`);
-  console.log(`✓ re-gridded at 60 BPM (${await countOf(pageB)})`);
-
-  step = 'B: WAV export';
-  const dlPromise = pageB.waitForEvent('download', { timeout: 15000 });
-  await pageB.click('#exportBtn');
-  const download = await dlPromise;
-  const head = await readFile(await download.path());
-  check(head.subarray(0, 4).toString() === 'RIFF' && head.subarray(8, 12).toString() === 'WAVE', 'not a WAV file');
-  check(/beatbox-loop-\d+bpm-/.test(download.suggestedFilename()), `filename: ${download.suggestedFilename()}`);
-  console.log(`✓ WAV export: ${download.suggestedFilename()} (${head.length} bytes)`);
+  step = 'B: play converted beat';
+  await pageB.click('#playBtn');
+  await waitStatus(pageB, /Playing your drums/);
+  await pageB.waitForTimeout(1000);
+  await pageB.click('#playBtn');
+  console.log('✓ converted beat plays and stops');
 
   step = 'B: empty take gives explicit feedback';
-  await pageB.click('#clearBtn');
   await pageB.click('#recBtn');
   await waitStatus(pageB, /Recording/);
   await pageB.waitForTimeout(700);
   await pageB.click('#recBtn');
   await waitStatus(pageB, /No hits captured/);
   console.log('✓ empty take explains itself');
-
-  step = 'B: metronome count-in shows a visible countdown';
-  await pageB.fill('#bpmInput', '240'); // fast count-in for the test
-  await pageB.dispatchEvent('#bpmInput', 'change');
-  await pageB.check('#metChk');
-  await pageB.click('#recBtn');
-  await waitStatus(pageB, /Count-in — \d/, 2000);
-  await pageB.waitForFunction(() => document.getElementById('recBtn').textContent.includes('Stop'), null, { timeout: 5000 });
-  for (const drum of ['kick', 'snare']) {
-    await pageB.dispatchEvent(`.pad[data-drum="${drum}"]`, 'pointerdown');
-    await pageB.waitForTimeout(140);
-  }
-  await pageB.click('#recBtn');
-  await waitAutoPlay(pageB);
-  check(/@ 240 BPM/.test(await countOf(pageB)), `metronome loop not locked: ${await countOf(pageB)}`);
-  console.log(`✓ count-in countdown + metronome loop auto-plays (${await countOf(pageB)})`);
-  await pageB.click('#playBtn');
-
-  step = 'B: cancelling the count-in keeps the previous loop';
-  await pageB.click('#recBtn');
-  await pageB.waitForTimeout(300); // inside the count-in
-  await pageB.click('#recBtn');    // reads "■ Cancel"
-  await waitStatus(pageB, /Count-in cancelled/);
-  check(/@ 240 BPM/.test(await countOf(pageB)), `previous loop lost: ${await countOf(pageB)}`);
-  console.log('✓ count-in cancel is explicit and non-destructive');
-
-  step = 'B: settings persistence';
-  await pageB.click('.chip[data-kit="trap"]');
-  await pageB.reload({ waitUntil: 'load' });
-  await pageB.waitForTimeout(300);
-  check((await pageB.$eval('.chip[data-kit].active', (el) => el.dataset.kit)) === 'trap', 'kit not persisted');
-  check((await pageB.$eval('#bpmInput', (el) => el.value)) === '240', 'bpm not persisted');
-  check((await pageB.$eval('.style-chip.active', (el) => el.dataset.style)) === 'full', 'style not persisted');
-  console.log('✓ settings persist across reload (kit, BPM, beat style)');
   await ctxB.close();
 
   if (errors.length) {

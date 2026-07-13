@@ -2,11 +2,14 @@
  * Beatbox → Drums — app wiring.
  *
  * Pipeline: mic → AudioWorklet onset detector → attack window →
- * classifier (kick/snare/hat) → DrumEngine synth voice.
- * Plus: kits, sensitivity, speaker guard, loop recorder with auto tempo
- * detection and a beat-style ladder (raw/tight/clean/full), metronome
- * mode, timeline view, WAV export, keyboard shortcuts, settings
- * persistence, and PWA registration.
+ * classifier (kick/snare/hat) → DrumEngine synth voice, with auto tempo
+ * detection turning a take into a quantized, bar-locked loop.
+ *
+ * UI NOTE: the interface is currently pared down to Record → waveform →
+ * Play. The richer controls (kits, sensitivity, speaker guard, metronome,
+ * beat styles, pads, timeline, export, debug) are commented out in
+ * index.html; every reference here is null-guarded, so uncommenting a
+ * section in the HTML re-enables it with no JS changes.
  */
 
 import { DrumEngine, KIT_NAMES } from './audio-engine.js';
@@ -14,6 +17,7 @@ import { analyzeHit, classifyHit } from './classifier.js';
 import { LoopRecorder, renderLoopWav, STYLE_LEVELS } from './recorder.js';
 import { Metronome } from './metronome.js';
 import { Timeline } from './timeline.js';
+import { Waveform } from './waveform.js';
 
 const CAPTURE_SAMPLES = 1024; // keep in sync with js/worklet/onset-processor.js
 const SETTINGS_KEY = 'b2d-settings';
@@ -37,6 +41,7 @@ const els = {
   exportBtn: document.getElementById('exportBtn'),
   recCount: document.getElementById('recCount'),
   timelineCanvas: document.getElementById('timeline'),
+  waveformCanvas: document.getElementById('waveform'),
   debugChk: document.getElementById('debugChk'),
   debugLine: document.getElementById('debugLine'),
 };
@@ -59,7 +64,10 @@ let speakerGuard = false;
 let meterLevel = 0;
 let prevRecorderState = 'idle';
 
-const timeline = new Timeline(els.timelineCanvas);
+const timeline = els.timelineCanvas ? new Timeline(els.timelineCanvas) : null;
+const waveform = els.waveformCanvas ? new Waveform(els.waveformCanvas) : null;
+
+const loopEnabled = () => (els.loopChk ? els.loopChk.checked : true);
 
 /* ---------- settings persistence ---------- */
 
@@ -67,14 +75,16 @@ function loadSettings() {
   let s = {};
   try { s = JSON.parse(localStorage.getItem(SETTINGS_KEY)) || {}; } catch { /* fresh start */ }
   if (KIT_NAMES.includes(s.kit)) kitName = s.kit;
-  if (STYLE_LEVELS.includes(s.styleLevel)) styleLevel = s.styleLevel;
+  // honor a persisted style only while the style chips are visible —
+  // in the minimal UI the conversion is always the sensible default
+  if (els.styleChips.length && STYLE_LEVELS.includes(s.styleLevel)) styleLevel = s.styleLevel;
   if (typeof s.sensitivity === 'number') sensitivity = Math.min(1, Math.max(0, s.sensitivity));
-  if (typeof s.speakerGuard === 'boolean') speakerGuard = s.speakerGuard;
-  els.sensSlider.value = String(Math.round(sensitivity * 100));
-  els.guardChk.checked = speakerGuard;
-  if (typeof s.bpm === 'number') els.bpmInput.value = String(clampBpm(s.bpm));
-  if (typeof s.metronomeOn === 'boolean') els.metChk.checked = s.metronomeOn;
-  if (typeof s.debug === 'boolean') {
+  if (els.guardChk && typeof s.speakerGuard === 'boolean') speakerGuard = s.speakerGuard;
+  if (els.sensSlider) els.sensSlider.value = String(Math.round(sensitivity * 100));
+  if (els.guardChk) els.guardChk.checked = speakerGuard;
+  if (els.bpmInput && typeof s.bpm === 'number') els.bpmInput.value = String(clampBpm(s.bpm));
+  if (els.metChk && typeof s.metronomeOn === 'boolean') els.metChk.checked = s.metronomeOn;
+  if (els.debugChk && els.debugLine && typeof s.debug === 'boolean') {
     els.debugChk.checked = s.debug;
     els.debugLine.hidden = !s.debug;
   }
@@ -89,9 +99,9 @@ function saveSettings() {
       styleLevel,
       sensitivity,
       speakerGuard,
-      bpm: clampBpm(Number(els.bpmInput.value)),
-      metronomeOn: els.metChk.checked,
-      debug: els.debugChk.checked,
+      bpm: els.bpmInput ? clampBpm(Number(els.bpmInput.value)) : 90,
+      metronomeOn: els.metChk ? els.metChk.checked : false,
+      debug: els.debugChk ? els.debugChk.checked : false,
     }));
   } catch { /* storage unavailable (private mode) — fine */ }
 }
@@ -109,6 +119,7 @@ function ensureAudio() {
     ctx = new AC({ latencyHint: 'interactive' });
     engine = new DrumEngine(ctx);
     engine.setKit(kitName);
+    if (waveform) engine.master.connect(waveform.attach(ctx)); // drums show on the waveform
     metronome = new Metronome(ctx, (when, accent) => engine.click(when, accent));
     recorder = new LoopRecorder({
       ctx,
@@ -129,8 +140,8 @@ function ensureAudio() {
 
 function syncRecorderSettings() {
   if (!recorder) return;
-  recorder.bpm = clampBpm(Number(els.bpmInput.value));
-  recorder.metronomeOn = els.metChk.checked;
+  recorder.bpm = els.bpmInput ? clampBpm(Number(els.bpmInput.value)) : 90;
+  recorder.metronomeOn = els.metChk ? els.metChk.checked : false;
 }
 
 async function startMic() {
@@ -163,6 +174,7 @@ async function startMic() {
 
   micSource = ctx.createMediaStreamSource(micStream);
   micSource.connect(workletNode);
+  if (waveform) micSource.connect(waveform.attach(ctx)); // mic shows on the waveform
   // Keep the worklet pulled by the graph without hearing the raw mic.
   const mute = ctx.createGain();
   mute.gain.value = 0;
@@ -233,7 +245,7 @@ function performHit(type, velocity, { features = null, fromMic = false } = {}) {
   suppressDetection();
   recorder.recordHit(type, velocity, fromMic ? detectionLatency() : 0);
   updateRecCount();
-  if (features && !els.debugLine.hidden) {
+  if (features && els.debugLine && !els.debugLine.hidden) {
     els.debugLine.textContent =
       `${type.toUpperCase()} — centroid ${Math.round(features.centroid)} Hz · ` +
       `zcr ${features.zcr.toFixed(2)} · ` +
@@ -267,36 +279,44 @@ async function startMicSession() {
     await startMic();
   } catch (err) {
     stopMic();
-    els.micBtn.classList.remove('live');
-    els.micLabel.textContent = 'Start';
+    if (els.micBtn) {
+      els.micBtn.classList.remove('live');
+      if (els.micLabel) els.micLabel.textContent = 'Start';
+    }
     throw err;
   }
-  els.micBtn.classList.add('live');
-  els.micBtn.setAttribute('aria-pressed', 'true');
-  els.micLabel.textContent = 'Stop';
+  if (els.micBtn) {
+    els.micBtn.classList.add('live');
+    els.micBtn.setAttribute('aria-pressed', 'true');
+    if (els.micLabel) els.micLabel.textContent = 'Stop';
+  }
   setStatus('Listening — beatbox away!');
 }
 
 function stopMicSession() {
   stopMic();
-  els.micBtn.classList.remove('live');
-  els.micBtn.setAttribute('aria-pressed', 'false');
-  els.micLabel.textContent = 'Start';
-  setStatus('Tap Start and allow microphone access');
+  if (els.micBtn) {
+    els.micBtn.classList.remove('live');
+    els.micBtn.setAttribute('aria-pressed', 'false');
+    if (els.micLabel) els.micLabel.textContent = 'Start';
+  }
+  setStatus('Press Record and beatbox — “B” kick · “Pss” snare · “Ts” hi-hat');
 }
 
-els.micBtn.addEventListener('click', async () => {
-  if (micBusy) return;
-  micBusy = true;
-  try {
-    if (!micOn) await startMicSession();
-    else stopMicSession();
-  } catch (err) {
-    setStatus(friendlyMicError(err), true);
-  } finally {
-    micBusy = false;
-  }
-});
+if (els.micBtn) {
+  els.micBtn.addEventListener('click', async () => {
+    if (micBusy) return;
+    micBusy = true;
+    try {
+      if (!micOn) await startMicSession();
+      else stopMicSession();
+    } catch (err) {
+      setStatus(friendlyMicError(err), true);
+    } finally {
+      micBusy = false;
+    }
+  });
+}
 
 function friendlyMicError(err) {
   if (err && (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError')) {
@@ -335,6 +355,7 @@ for (const chip of els.styleChips) {
 }
 
 function reflectStyleChips() {
+  if (!els.styleChips.length) return;
   const hasGroove = !!(recorder && recorder.groove);
   for (const c of els.styleChips) {
     c.classList.toggle('active', c.dataset.style === styleLevel);
@@ -343,35 +364,43 @@ function reflectStyleChips() {
   }
 }
 
-els.sensSlider.addEventListener('input', () => {
-  sensitivity = Number(els.sensSlider.value) / 100;
-  applySensitivity();
-  saveSettings();
-});
+if (els.sensSlider) {
+  els.sensSlider.addEventListener('input', () => {
+    sensitivity = Number(els.sensSlider.value) / 100;
+    applySensitivity();
+    saveSettings();
+  });
+}
 
-els.guardChk.addEventListener('change', () => {
-  speakerGuard = els.guardChk.checked;
-  applySensitivity();
-  saveSettings();
-});
+if (els.guardChk) {
+  els.guardChk.addEventListener('change', () => {
+    speakerGuard = els.guardChk.checked;
+    applySensitivity();
+    saveSettings();
+  });
+}
 
-els.bpmInput.addEventListener('change', () => {
-  els.bpmInput.value = String(clampBpm(Number(els.bpmInput.value)));
-  syncRecorderSettings();
-  // nudging the BPM of an auto-detected loop re-fits its grid
-  if (recorder && recorder.grooveSource === 'auto' && recorder.state === 'idle') {
-    if (recorder.regrid(clampBpm(Number(els.bpmInput.value)))) {
-      setStatus(`Re-gridded at ${recorder.loopBpm} BPM — ${recorder.bars()}-bar loop`);
-      updateRecCount();
+if (els.bpmInput) {
+  els.bpmInput.addEventListener('change', () => {
+    els.bpmInput.value = String(clampBpm(Number(els.bpmInput.value)));
+    syncRecorderSettings();
+    // nudging the BPM of an auto-detected loop re-fits its grid
+    if (recorder && recorder.grooveSource === 'auto' && recorder.state === 'idle') {
+      if (recorder.regrid(clampBpm(Number(els.bpmInput.value)))) {
+        setStatus(`Re-gridded at ${recorder.loopBpm} BPM — ${recorder.bars()}-bar loop`);
+        updateRecCount();
+      }
     }
-  }
-  saveSettings();
-});
+    saveSettings();
+  });
+}
 
-els.metChk.addEventListener('change', () => {
-  syncRecorderSettings();
-  saveSettings();
-});
+if (els.metChk) {
+  els.metChk.addEventListener('change', () => {
+    syncRecorderSettings();
+    saveSettings();
+  });
+}
 
 /* ---------- loop recorder ---------- */
 
@@ -394,7 +423,7 @@ els.recBtn.addEventListener('click', async () => {
       }
     }
     recorder.startRecord();
-    if (micFailNote) setStatus(`${micFailNote} Recording pad taps only.`, true);
+    if (micFailNote) setStatus(`${micFailNote} Recording without the mic.`, true);
   } else if (recorder.state === 'armed' || recorder.state === 'recording') {
     recorder.stopRecord();
   }
@@ -404,78 +433,88 @@ els.playBtn.addEventListener('click', () => {
   ensureAudio();
   syncRecorderSettings();
   if (recorder.state === 'playing') recorder.stopPlay();
-  else if (recorder.state === 'idle') recorder.play(() => els.loopChk.checked);
+  else if (recorder.state === 'idle') recorder.play(loopEnabled);
 });
 
-els.clearBtn.addEventListener('click', () => {
-  if (!recorder) return;
-  recorder.clear();
-  updateRecCount();
-  updateTransportUI();
-  reflectStyleChips();
-});
-
-els.exportBtn.addEventListener('click', async () => {
-  if (!recorder || !recorder.events.length || recorder.state !== 'idle') return;
-  els.exportBtn.disabled = true;
-  setStatus('Rendering WAV…');
-  try {
-    const wav = await renderLoopWav({
-      events: recorder.playableEvents(),
-      loopDur: recorder.loopDur,
-      kit: kitName,
-      seamless: !!recorder.groove,
-    });
-    const blob = new Blob([wav], { type: 'audio/wav' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = recorder.groove
-      ? `beatbox-loop-${recorder.loopBpm}bpm-${kitName}.wav`
-      : `beatbox-loop-${kitName}.wav`;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 10000);
-    setStatus('Loop exported as WAV ✓');
-  } catch (err) {
-    setStatus(`Export failed: ${(err && err.message) || err}`, true);
-  } finally {
-    els.exportBtn.disabled = false;
+if (els.clearBtn) {
+  els.clearBtn.addEventListener('click', () => {
+    if (!recorder) return;
+    recorder.clear();
+    updateRecCount();
     updateTransportUI();
-  }
-});
+    reflectStyleChips();
+  });
+}
+
+if (els.exportBtn) {
+  els.exportBtn.addEventListener('click', async () => {
+    if (!recorder || !recorder.events.length || recorder.state !== 'idle') return;
+    els.exportBtn.disabled = true;
+    setStatus('Rendering WAV…');
+    try {
+      const wav = await renderLoopWav({
+        events: recorder.playableEvents(),
+        loopDur: recorder.loopDur,
+        kit: kitName,
+        seamless: !!recorder.groove,
+      });
+      const blob = new Blob([wav], { type: 'audio/wav' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = recorder.groove
+        ? `beatbox-loop-${recorder.loopBpm}bpm-${kitName}.wav`
+        : `beatbox-loop-${kitName}.wav`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 10000);
+      setStatus('Loop exported as WAV ✓');
+    } catch (err) {
+      setStatus(`Export failed: ${(err && err.message) || err}`, true);
+    } finally {
+      els.exportBtn.disabled = false;
+      updateTransportUI();
+    }
+  });
+}
 
 function onRecorderState(state) {
   if (state === 'armed') {
     setStatus('Count-in — recording starts on the next “1”…');
   } else if (state === 'recording') {
-    setStatus(micOn ? 'Recording — beatbox or tap the pads' : 'Recording — tap the pads (mic is off)');
+    setStatus(micOn ? 'Recording — beatbox now…' : 'Recording — mic unavailable');
   } else if (state === 'playing') {
-    setStatus('Playing loop');
+    setStatus('Playing your drums ▶');
   } else if (prevRecorderState === 'recording') {
-    // just stopped a take — report what the analysis found, then let the
-    // beat speak for itself (auto-play)
+    // just stopped a take — report what the conversion found
     if (!recorder.events.length) {
-      setStatus('No hits captured — is the mic on (red = live)? Beatbox close to it or tap the pads, then try again.', true);
+      setStatus('No hits captured — beatbox close to the mic with short, punchy sounds, then try again.', true);
     } else {
       let summary;
       if (recorder.grooveSource === 'auto') {
-        summary = `Auto-beat: ${recorder.loopBpm} BPM · ${recorder.bars()}-bar loop (nudge BPM to re-grid)`;
-        els.bpmInput.value = String(recorder.loopBpm);
-        saveSettings();
+        summary = `Converted ✓ ${recorder.loopBpm} BPM · ${recorder.bars()}-bar drum loop`;
+        if (els.bpmInput) {
+          els.bpmInput.value = String(recorder.loopBpm);
+          saveSettings();
+        }
       } else if (recorder.grooveSource === 'metronome') {
         summary = `Loop locked to ${recorder.bars()} bar${recorder.bars() === 1 ? '' : 's'} at ${recorder.loopBpm} BPM`;
       } else {
-        summary = 'No steady tempo detected — raw take (try 6+ hits with even timing)';
+        summary = `Captured ${recorder.events.length} hit${recorder.events.length === 1 ? '' : 's'}`;
       }
-      setStatus(summary);
-      autoPlay(summary);
+      setStatus(`${summary} — press ▶ Play`);
+      els.playBtn.classList.add('ready');
+      // Auto-play is disabled while the UI is minimal — Play is the star.
+      // autoPlay(summary);
     }
   } else if (prevRecorderState === 'armed') {
     setStatus('Count-in cancelled — nothing recorded. Press ● Record to try again.');
   } else {
-    setStatus(micOn ? 'Listening — beatbox away!' : 'Tap Start and allow microphone access');
+    setStatus(micOn ? 'Listening — beatbox away!' : 'Press Record and beatbox — “B” kick · “Pss” snare · “Ts” hi-hat');
+  }
+  if (state !== 'idle' || prevRecorderState !== 'recording') {
+    if (state === 'playing' || state === 'recording' || state === 'armed') els.playBtn.classList.remove('ready');
   }
   prevRecorderState = state;
   updateRecCount();
@@ -483,15 +522,18 @@ function onRecorderState(state) {
   reflectStyleChips();
 }
 
+// Kept for when the fuller UI returns — plays the loop right after a take.
+// eslint-disable-next-line no-unused-vars
 function autoPlay(summary) {
   setTimeout(() => {
     if (!recorder || recorder.state !== 'idle' || !recorder.events.length) return;
-    recorder.play(() => els.loopChk.checked);
+    recorder.play(loopEnabled);
     if (recorder.state === 'playing') setStatus(`${summary} — playing ▶`);
   }, 120);
 }
 
 function updateRecCount() {
+  if (!els.recCount) return;
   if (!recorder || (recorder.state === 'armed')) {
     els.recCount.textContent = recorder ? 'Get ready…' : 'No hits recorded';
     return;
@@ -508,8 +550,7 @@ function updateRecCount() {
   const n = recorder.playableEvents().length;
   const hits = `${n} hit${n === 1 ? '' : 's'}`;
   if (recorder.groove) {
-    const bars = recorder.bars();
-    els.recCount.textContent = `${hits} · ${bars}-bar loop @ ${recorder.loopBpm} BPM`;
+    els.recCount.textContent = `${hits} · ${recorder.bars()}-bar loop @ ${recorder.loopBpm} BPM`;
   } else {
     els.recCount.textContent = `${hits} · loop ${recorder.loopDur.toFixed(2)} s`;
   }
@@ -528,11 +569,12 @@ function updateTransportUI() {
   els.playBtn.disabled = state === 'recording' || state === 'armed' || (!hasEvents && state !== 'playing');
   els.playBtn.classList.toggle('playing', state === 'playing');
   els.playBtn.textContent = state === 'playing' ? '■ Stop' : '▶ Play';
+  if (els.playBtn.disabled || state === 'playing') els.playBtn.classList.remove('ready');
 
-  els.clearBtn.disabled = state !== 'idle' || !hasEvents;
-  els.exportBtn.disabled = state !== 'idle' || !hasEvents;
-  els.bpmInput.disabled = state !== 'idle';
-  els.metChk.disabled = state !== 'idle';
+  if (els.clearBtn) els.clearBtn.disabled = state !== 'idle' || !hasEvents;
+  if (els.exportBtn) els.exportBtn.disabled = state !== 'idle' || !hasEvents;
+  if (els.bpmInput) els.bpmInput.disabled = state !== 'idle';
+  if (els.metChk) els.metChk.disabled = state !== 'idle';
 }
 
 /* ---------- keyboard shortcuts (desktop) ---------- */
@@ -557,17 +599,29 @@ document.addEventListener('keydown', (e) => {
 
 /* ---------- debug toggle ---------- */
 
-els.debugChk.addEventListener('change', () => {
-  els.debugLine.hidden = !els.debugChk.checked;
-  saveSettings();
-});
+if (els.debugChk && els.debugLine) {
+  els.debugChk.addEventListener('change', () => {
+    els.debugLine.hidden = !els.debugChk.checked;
+    saveSettings();
+  });
+}
 
-/* ---------- meter + timeline animation ---------- */
+/* ---------- waveform / meter / timeline animation ---------- */
 
 (function animate() {
   meterLevel *= 0.88;
-  const pct = Math.min(1, Math.sqrt(meterLevel * 6)) * 100;
-  els.meterFill.style.width = `${pct}%`;
+  if (els.meterFill) {
+    const pct = Math.min(1, Math.sqrt(meterLevel * 6)) * 100;
+    els.meterFill.style.width = `${pct}%`;
+  }
+
+  if (waveform) {
+    waveform.sample();
+    waveform.render({
+      live: micOn || (recorder && recorder.state === 'playing'),
+      recording: !!(recorder && (recorder.state === 'recording' || recorder.state === 'armed')),
+    });
+  }
 
   if (recorder && recorder.state === 'armed') {
     // visible countdown — count-in clicks are inaudible on muted phones
@@ -578,9 +632,8 @@ els.debugChk.addEventListener('change', () => {
     }
   }
 
-  if (recorder) {
-    const state = recorder.state;
-    if (state === 'recording') {
+  if (timeline) {
+    if (recorder && recorder.state === 'recording') {
       const elapsed = recorder.recordingElapsed();
       const dur = Math.max(2, elapsed);
       timeline.render({
@@ -590,16 +643,16 @@ els.debugChk.addEventListener('change', () => {
         bpm: recorder.metronomeOn ? recorder.bpm : null,
         recording: true,
       });
-    } else {
+    } else if (recorder) {
       timeline.render({
         events: recorder.playableEvents(),
         dur: recorder.loopDur || 1,
         playhead: recorder.playheadPos(),
         bpm: recorder.groove ? recorder.loopBpm : null,
       });
+    } else {
+      timeline.render({ events: [], dur: 1 });
     }
-  } else {
-    timeline.render({ events: [], dur: 1 });
   }
   requestAnimationFrame(animate);
 })();

@@ -2,6 +2,8 @@
 
 Beatbox into your phone's microphone and hear yourself as an actual drum kit — acoustic, 808, trap, electro, lo-fi, or percussion. Everything runs live in the browser: no app install, no server, no audio ever leaves your device.
 
+> **Current UI: intentionally minimal.** While the core record → convert → play flow gets solid, the interface shows only a **Record button**, a **live waveform**, and a **Play button** for the converted beat. The features described below (kits, pads, sensitivity, metronome, beat styles, timeline, WAV export, …) still exist and are unit-tested — their markup is commented out in `index.html`, and `js/main.js` re-enables each section automatically when uncommented.
+
 Make a **“B”** sound and a kick drum fires. **“Pss”** and you get a snare. **“Ts”** and a hi-hat plays. Record a loop with zero setup — the app detects your tempo by itself and hands the beat back quantized — then switch kits on it and export it as a WAV for your DAW.
 
 ## Features
