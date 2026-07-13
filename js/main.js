@@ -3,11 +3,19 @@
  *
  * Pipeline: mic → AudioWorklet onset detector → attack window →
  * classifier (kick/snare/hat) → DrumEngine synth voice.
- * Plus: kit selection, sensitivity, level meter, and a simple loop recorder.
+ * Plus: kits, sensitivity, speaker guard, metronome + quantized loop
+ * recorder, timeline view, WAV export, keyboard shortcuts, settings
+ * persistence, and PWA registration.
  */
 
-import { DrumEngine } from './audio-engine.js';
+import { DrumEngine, KIT_NAMES } from './audio-engine.js';
 import { analyzeHit, classifyHit } from './classifier.js';
+import { LoopRecorder, renderLoopWav } from './recorder.js';
+import { Metronome } from './metronome.js';
+import { Timeline } from './timeline.js';
+
+const CAPTURE_SAMPLES = 1024; // keep in sync with js/worklet/onset-processor.js
+const SETTINGS_KEY = 'b2d-settings';
 
 const els = {
   micBtn: document.getElementById('micBtn'),
@@ -17,17 +25,25 @@ const els = {
   pads: Array.from(document.querySelectorAll('.pad')),
   chips: Array.from(document.querySelectorAll('.chip')),
   sensSlider: document.getElementById('sensSlider'),
+  guardChk: document.getElementById('guardChk'),
+  bpmInput: document.getElementById('bpmInput'),
+  metChk: document.getElementById('metChk'),
+  quantChk: document.getElementById('quantChk'),
   recBtn: document.getElementById('recBtn'),
   playBtn: document.getElementById('playBtn'),
   loopChk: document.getElementById('loopChk'),
   clearBtn: document.getElementById('clearBtn'),
+  exportBtn: document.getElementById('exportBtn'),
   recCount: document.getElementById('recCount'),
+  timelineCanvas: document.getElementById('timeline'),
   debugChk: document.getElementById('debugChk'),
   debugLine: document.getElementById('debugLine'),
 };
 
 let ctx = null;
 let engine = null;
+let metronome = null;
+let recorder = null;
 let workletReady = false;
 let workletNode = null;
 let micStream = null;
@@ -36,16 +52,50 @@ let micOn = false;
 let micBusy = false;
 
 let kitName = 'acoustic';
-let sensitivity = Number(els.sensSlider.value) / 100;
-
-// Loop recorder state
-let recording = false;
-let recStart = 0;
-let events = [];
-let playing = false;
-let playbackTimers = [];
-
+let sensitivity = 0.65;
+let speakerGuard = false;
 let meterLevel = 0;
+
+const timeline = new Timeline(els.timelineCanvas);
+
+/* ---------- settings persistence ---------- */
+
+function loadSettings() {
+  let s = {};
+  try { s = JSON.parse(localStorage.getItem(SETTINGS_KEY)) || {}; } catch { /* fresh start */ }
+  if (KIT_NAMES.includes(s.kit)) kitName = s.kit;
+  if (typeof s.sensitivity === 'number') sensitivity = Math.min(1, Math.max(0, s.sensitivity));
+  if (typeof s.speakerGuard === 'boolean') speakerGuard = s.speakerGuard;
+  els.sensSlider.value = String(Math.round(sensitivity * 100));
+  els.guardChk.checked = speakerGuard;
+  if (typeof s.bpm === 'number') els.bpmInput.value = String(clampBpm(s.bpm));
+  if (typeof s.metronomeOn === 'boolean') els.metChk.checked = s.metronomeOn;
+  if (typeof s.quantizeOn === 'boolean') els.quantChk.checked = s.quantizeOn;
+  if (typeof s.debug === 'boolean') {
+    els.debugChk.checked = s.debug;
+    els.debugLine.hidden = !s.debug;
+  }
+  for (const c of els.chips) c.classList.toggle('active', c.dataset.kit === kitName);
+}
+
+function saveSettings() {
+  try {
+    localStorage.setItem(SETTINGS_KEY, JSON.stringify({
+      kit: kitName,
+      sensitivity,
+      speakerGuard,
+      bpm: clampBpm(Number(els.bpmInput.value)),
+      metronomeOn: els.metChk.checked,
+      quantizeOn: els.quantChk.checked,
+      debug: els.debugChk.checked,
+    }));
+  } catch { /* storage unavailable (private mode) — fine */ }
+}
+
+function clampBpm(n) {
+  if (!Number.isFinite(n)) return 90;
+  return Math.min(240, Math.max(40, Math.round(n)));
+}
 
 /* ---------- audio setup ---------- */
 
@@ -55,9 +105,28 @@ function ensureAudio() {
     ctx = new AC({ latencyHint: 'interactive' });
     engine = new DrumEngine(ctx);
     engine.setKit(kitName);
+    metronome = new Metronome(ctx, (when, accent) => engine.click(when, accent));
+    recorder = new LoopRecorder({
+      ctx,
+      engine,
+      metronome,
+      onHit: (type) => {
+        flashPad(type);
+        suppressDetection();
+      },
+      onStateChange: onRecorderState,
+    });
+    syncRecorderSettings();
   }
   if (ctx.state === 'suspended') ctx.resume();
   return ctx;
+}
+
+function syncRecorderSettings() {
+  if (!recorder) return;
+  recorder.bpm = clampBpm(Number(els.bpmInput.value));
+  recorder.metronomeOn = els.metChk.checked;
+  recorder.quantizeOn = els.quantChk.checked;
 }
 
 async function startMic() {
@@ -119,12 +188,18 @@ function stopMic() {
 
 function applySensitivity() {
   if (!workletNode) return;
-  // sensitivity 0..1 → gentler/stricter gates
+  const guardFactor = speakerGuard ? 1.6 : 1;
   workletNode.port.postMessage({
     type: 'config',
-    thresholdRatio: 12 - 9 * sensitivity, // 12 (strict) → 3 (hair trigger)
-    minRms: 0.03 - 0.024 * sensitivity,   // 0.03 → 0.006
+    thresholdRatio: (12 - 9 * sensitivity) * guardFactor, // 12 (strict) → 3 (hair trigger)
+    minRms: 0.03 - 0.024 * sensitivity,                   // 0.03 → 0.006
   });
+}
+
+function suppressDetection() {
+  if (speakerGuard && workletNode) {
+    workletNode.port.postMessage({ type: 'suppress', sec: 0.15 });
+  }
 }
 
 function onWorkletMessage(e) {
@@ -138,19 +213,22 @@ function onWorkletMessage(e) {
     const type = classifyHit(features);
     if (!type) return;
     const velocity = Math.min(1, 0.35 + msg.peak * 1.2);
-    performHit(type, velocity, features);
+    performHit(type, velocity, { features, fromMic: true });
   }
 }
 
 /* ---------- hits, pads, debug ---------- */
 
-function performHit(type, velocity, features) {
+function detectionLatency() {
+  return CAPTURE_SAMPLES / ctx.sampleRate + (ctx.outputLatency || ctx.baseLatency || 0.01);
+}
+
+function performHit(type, velocity, { features = null, fromMic = false } = {}) {
   engine.trigger(type, { velocity });
   flashPad(type);
-  if (recording) {
-    events.push({ t: (performance.now() - recStart) / 1000, type, velocity });
-    updateRecCount();
-  }
+  suppressDetection();
+  recorder.recordHit(type, velocity, fromMic ? detectionLatency() : 0);
+  updateRecCount();
   if (features && !els.debugLine.hidden) {
     els.debugLine.textContent =
       `${type.toUpperCase()} — centroid ${Math.round(features.centroid)} Hz · ` +
@@ -173,7 +251,7 @@ function flashPad(type) {
 for (const pad of els.pads) {
   pad.addEventListener('pointerdown', () => {
     ensureAudio();
-    performHit(pad.dataset.drum, 0.9, null);
+    performHit(pad.dataset.drum, 0.9);
   });
 }
 
@@ -222,114 +300,206 @@ function setStatus(text, isError = false) {
   els.statusText.classList.toggle('error', isError);
 }
 
-/* ---------- kit chips & sensitivity ---------- */
+/* ---------- kit chips, sensitivity, guard, groove ---------- */
 
 for (const chip of els.chips) {
   chip.addEventListener('click', () => {
     kitName = chip.dataset.kit;
     if (engine) engine.setKit(kitName);
     for (const c of els.chips) c.classList.toggle('active', c === chip);
+    saveSettings();
   });
 }
 
 els.sensSlider.addEventListener('input', () => {
   sensitivity = Number(els.sensSlider.value) / 100;
   applySensitivity();
+  saveSettings();
+});
+
+els.guardChk.addEventListener('change', () => {
+  speakerGuard = els.guardChk.checked;
+  applySensitivity();
+  saveSettings();
+});
+
+els.bpmInput.addEventListener('change', () => {
+  els.bpmInput.value = String(clampBpm(Number(els.bpmInput.value)));
+  syncRecorderSettings();
+  saveSettings();
+});
+
+els.metChk.addEventListener('change', () => {
+  syncRecorderSettings();
+  saveSettings();
+});
+
+els.quantChk.addEventListener('change', () => {
+  syncRecorderSettings();
+  saveSettings();
 });
 
 /* ---------- loop recorder ---------- */
 
 els.recBtn.addEventListener('click', () => {
-  if (playing) return;
-  recording = !recording;
-  if (recording) {
-    events = [];
-    recStart = performance.now();
-    els.recBtn.textContent = '■ Stop';
-    els.recBtn.classList.add('recording');
-    setStatus(micOn ? 'Recording — beatbox or tap the pads' : 'Recording — tap the pads (mic is off)');
-  } else {
-    els.recBtn.textContent = '● Record';
-    els.recBtn.classList.remove('recording');
-    setStatus(micOn ? 'Listening — beatbox away!' : 'Tap Start and allow microphone access');
-  }
-  updateRecCount();
-  updateTransportButtons();
+  ensureAudio();
+  syncRecorderSettings();
+  if (recorder.state === 'idle') recorder.startRecord();
+  else if (recorder.state === 'armed' || recorder.state === 'recording') recorder.stopRecord();
 });
 
 els.playBtn.addEventListener('click', () => {
-  if (playing) {
-    stopPlayback();
-  } else if (events.length) {
-    startPlayback();
-  }
+  ensureAudio();
+  syncRecorderSettings();
+  if (recorder.state === 'playing') recorder.stopPlay();
+  else if (recorder.state === 'idle') recorder.play(() => els.loopChk.checked);
 });
 
 els.clearBtn.addEventListener('click', () => {
-  if (playing) stopPlayback();
-  events = [];
+  if (!recorder) return;
+  recorder.clear();
   updateRecCount();
-  updateTransportButtons();
+  updateTransportUI();
 });
 
-function startPlayback() {
-  ensureAudio();
-  playing = true;
-  els.playBtn.textContent = '■ Stop';
-  els.playBtn.classList.add('playing');
-  updateTransportButtons();
-  scheduleLoopPass();
-}
-
-function scheduleLoopPass() {
-  const t0 = ctx.currentTime + 0.1;
-  let lastT = 0;
-  for (const e of events) {
-    engine.trigger(e.type, { when: t0 + e.t, velocity: e.velocity, track: true });
-    playbackTimers.push(setTimeout(() => flashPad(e.type), (e.t + 0.1) * 1000));
-    if (e.t > lastT) lastT = e.t;
+els.exportBtn.addEventListener('click', async () => {
+  if (!recorder || !recorder.events.length || recorder.state !== 'idle') return;
+  els.exportBtn.disabled = true;
+  setStatus('Rendering WAV…');
+  try {
+    const wav = await renderLoopWav({
+      events: recorder.playableEvents(),
+      loopDur: recorder.loopDur,
+      kit: kitName,
+      seamless: recorder.usedMetronome,
+    });
+    const blob = new Blob([wav], { type: 'audio/wav' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = recorder.usedMetronome
+      ? `beatbox-loop-${recorder.loopBpm}bpm-${kitName}.wav`
+      : `beatbox-loop-${kitName}.wav`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
+    setStatus('Loop exported as WAV ✓');
+  } catch (err) {
+    setStatus(`Export failed: ${(err && err.message) || err}`, true);
+  } finally {
+    els.exportBtn.disabled = false;
+    updateTransportUI();
   }
-  const durationMs = (lastT + 0.7) * 1000;
-  playbackTimers.push(setTimeout(() => {
-    playbackTimers = [];
-    if (playing && els.loopChk.checked) scheduleLoopPass();
-    else stopPlayback();
-  }, durationMs));
-}
+});
 
-function stopPlayback() {
-  playing = false;
-  for (const t of playbackTimers) clearTimeout(t);
-  playbackTimers = [];
-  if (engine) engine.stopScheduled();
-  els.playBtn.textContent = '▶ Play';
-  els.playBtn.classList.remove('playing');
-  updateTransportButtons();
+function onRecorderState(state) {
+  if (state === 'armed') {
+    setStatus(`Count-in — recording starts on the next “1”…`);
+  } else if (state === 'recording') {
+    setStatus(micOn ? 'Recording — beatbox or tap the pads' : 'Recording — tap the pads (mic is off)');
+  } else if (state === 'playing') {
+    setStatus('Playing loop');
+  } else {
+    setStatus(micOn ? 'Listening — beatbox away!' : 'Tap Start and allow microphone access');
+  }
+  updateRecCount();
+  updateTransportUI();
 }
 
 function updateRecCount() {
-  els.recCount.textContent = events.length
-    ? `${events.length} hit${events.length === 1 ? '' : 's'} recorded`
+  const n = recorder ? recorder.events.length : 0;
+  els.recCount.textContent = n
+    ? `${n} hit${n === 1 ? '' : 's'} · loop ${recorder.loopDur ? recorder.loopDur.toFixed(2) + ' s' : '—'}`
     : 'No hits recorded';
 }
 
-function updateTransportButtons() {
-  els.playBtn.disabled = recording || (!playing && events.length === 0);
-  els.clearBtn.disabled = recording || events.length === 0;
-  els.recBtn.disabled = playing;
+function updateTransportUI() {
+  const state = recorder ? recorder.state : 'idle';
+  const hasEvents = !!(recorder && recorder.events.length);
+
+  els.recBtn.disabled = state === 'playing';
+  els.recBtn.classList.toggle('recording', state === 'recording' || state === 'armed');
+  els.recBtn.textContent = state === 'recording' ? '■ Stop' : state === 'armed' ? '■ Cancel' : '● Record';
+
+  els.playBtn.disabled = state === 'recording' || state === 'armed' || (!hasEvents && state !== 'playing');
+  els.playBtn.classList.toggle('playing', state === 'playing');
+  els.playBtn.textContent = state === 'playing' ? '■ Stop' : '▶ Play';
+
+  els.clearBtn.disabled = state !== 'idle' || !hasEvents;
+  els.exportBtn.disabled = state !== 'idle' || !hasEvents;
+  els.bpmInput.disabled = state !== 'idle';
+  els.metChk.disabled = state !== 'idle';
 }
 
-/* ---------- debug toggle & level meter ---------- */
+/* ---------- keyboard shortcuts (desktop) ---------- */
+
+const KEY_PADS = { a: 'kick', s: 'snare', d: 'hat' };
+
+document.addEventListener('keydown', (e) => {
+  if (e.repeat || e.metaKey || e.ctrlKey || e.altKey) return;
+  const tag = e.target && e.target.tagName;
+  if (tag === 'INPUT' && e.target.type === 'number') return; // typing BPM
+  const key = e.key.toLowerCase();
+  if (KEY_PADS[key]) {
+    ensureAudio();
+    performHit(KEY_PADS[key], 0.9);
+  } else if (key === 'r' && !els.recBtn.disabled) {
+    els.recBtn.click();
+  } else if (key === ' ' && e.target === document.body) {
+    e.preventDefault();
+    if (!els.playBtn.disabled) els.playBtn.click();
+  }
+});
+
+/* ---------- debug toggle ---------- */
 
 els.debugChk.addEventListener('change', () => {
   els.debugLine.hidden = !els.debugChk.checked;
+  saveSettings();
 });
 
-(function meterLoop() {
+/* ---------- meter + timeline animation ---------- */
+
+(function animate() {
   meterLevel *= 0.88;
   const pct = Math.min(1, Math.sqrt(meterLevel * 6)) * 100;
   els.meterFill.style.width = `${pct}%`;
-  requestAnimationFrame(meterLoop);
+
+  if (recorder) {
+    const state = recorder.state;
+    if (state === 'recording') {
+      const elapsed = recorder.recordingElapsed();
+      const dur = Math.max(2, elapsed);
+      timeline.render({
+        events: recorder.events,
+        dur,
+        playhead: Math.min(1, elapsed / dur),
+        bpm: recorder.metronomeOn ? recorder.bpm : null,
+        recording: true,
+      });
+    } else {
+      timeline.render({
+        events: recorder.playableEvents(),
+        dur: recorder.loopDur || 1,
+        playhead: recorder.playheadPos(),
+        bpm: recorder.usedMetronome ? recorder.loopBpm : null,
+      });
+    }
+  } else {
+    timeline.render({ events: [], dur: 1 });
+  }
+  requestAnimationFrame(animate);
 })();
 
-updateTransportButtons();
+/* ---------- init ---------- */
+
+loadSettings();
+updateTransportUI();
+updateRecCount();
+
+if ('serviceWorker' in navigator && window.isSecureContext) {
+  const register = () => navigator.serviceWorker.register('sw.js').catch(() => { /* offline support is best-effort */ });
+  if (document.readyState === 'complete') register();
+  else window.addEventListener('load', register);
+}

@@ -1,14 +1,24 @@
 /**
  * DrumEngine — synthesizes drum sounds with the Web Audio API.
  *
- * Three kits, all generated procedurally (no sample files to load):
+ * Six kits, all generated procedurally (no sample files to load):
  *   acoustic — sine-drop kick with beater click, noise+shell-tone snare, bright hat
- *   tr808    — long saturated sine kick, snappy snare, metallic square-stack hat
- *   electro  — pitch-zap kick, clap-style snare, tight resonant hat
+ *   tr808    — saturated sine kick, snappy snare, metallic square-stack hat
+ *   trap     — long sub kick, clap-crack snare, tight bright metal hat
+ *   electro  — pitch-zap kick, clap-style snare, resonant hat
+ *   lofi     — heavily saturated dull kick, dusty snare, muffled hat
+ *   perc     — conga, block slap, shaker
  *
  * Every voice takes (ctx, out, noiseBuf, when, velocity) and returns its
  * source nodes so scheduled playback can be cancelled mid-flight.
+ *
+ * Works against both AudioContext and OfflineAudioContext (WAV export).
  */
+
+export const KIT_NAMES = ['acoustic', 'tr808', 'trap', 'electro', 'lofi', 'perc'];
+
+// Subtle stereo placement per instrument, like sitting at a kit
+const PAN = { kick: 0, snare: -0.08, hat: 0.14 };
 
 export class DrumEngine {
   constructor(ctx) {
@@ -43,7 +53,8 @@ export class DrumEngine {
     const voice = KITS[this.kit] && KITS[this.kit][type];
     if (!voice) return;
     const v = Math.min(1, Math.max(0.05, velocity));
-    const sources = voice(this.ctx, this.master, this.noiseBuf, when, v);
+    const out = this._outputFor(type);
+    const sources = voice(this.ctx, out, this.noiseBuf, when, v);
     if (track) {
       for (const s of sources) {
         this.scheduled.add(s);
@@ -52,11 +63,33 @@ export class DrumEngine {
     }
   }
 
+  /** Metronome click (not part of any kit, never in WAV exports). */
+  click(when, accent = false) {
+    const o = this.ctx.createOscillator();
+    o.type = 'sine';
+    o.frequency.value = accent ? 2100 : 1650;
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(accent ? 0.35 : 0.2, when);
+    g.gain.exponentialRampToValueAtTime(0.001, when + 0.035);
+    o.connect(g).connect(this.master);
+    o.start(when);
+    o.stop(when + 0.06);
+  }
+
   stopScheduled() {
     for (const s of this.scheduled) {
       try { s.stop(0); } catch { /* already stopped */ }
     }
     this.scheduled.clear();
+  }
+
+  _outputFor(type) {
+    if (!this.ctx.createStereoPanner) return this.master;
+    const pan = this.ctx.createStereoPanner();
+    // tiny per-hit jitter keeps repeated hits from sounding machine-identical
+    pan.pan.value = (PAN[type] || 0) + (Math.random() * 2 - 1) * 0.04;
+    pan.connect(this.master);
+    return pan;
   }
 }
 
@@ -113,17 +146,54 @@ function makeDrive(ctx, amount) {
   return shaper;
 }
 
+/** Classic 808-style metal: detuned squares through tight band/high-pass. */
+function metalHat(ctx, out, t, v, { base = 40, bp = 10000, bpQ = 1.2, hp = 7000, decay = 0.05, level = 0.4 }) {
+  const ratios = [2, 3, 4.16, 5.43, 6.79, 8.21];
+  const pre = ctx.createGain();
+  pre.gain.value = 0.2;
+  const band = makeFilter(ctx, 'bandpass', bp, bpQ);
+  const high = makeFilter(ctx, 'highpass', hp);
+  const g = envGain(ctx, t, level * v, decay);
+  pre.connect(band).connect(high).connect(g).connect(out);
+  return ratios.map((r) => {
+    const o = makeOsc(ctx, 'square', base * r, t, decay + 0.03);
+    o.connect(pre);
+    return o;
+  });
+}
+
+/** Clap-style: quick noise bursts, then a noise tail, through one bandpass. */
+function clap(ctx, out, noise, t, v, { bp = 1600, bpQ = 1.1, tailHp = null, tailLevel = 0.45, tailDecay = 0.2 }) {
+  const band = makeFilter(ctx, 'bandpass', bp, bpQ);
+  band.connect(out);
+  const sources = [];
+  for (const [dt, level] of [[0, 0.5], [0.012, 0.4], [0.024, 0.35]]) {
+    const n = makeNoise(ctx, noise, t + dt, 0.015);
+    const g = envGain(ctx, t + dt, level * v, 0.013);
+    n.connect(g).connect(band);
+    sources.push(n);
+  }
+  const tail = makeNoise(ctx, noise, t + 0.036, tailDecay + 0.03);
+  const tg = envGain(ctx, t + 0.036, tailLevel * v, tailDecay);
+  if (tailHp) {
+    const f = makeFilter(ctx, 'highpass', tailHp);
+    tail.connect(f).connect(tg).connect(band);
+  } else {
+    tail.connect(tg).connect(band);
+  }
+  sources.push(tail);
+  return sources;
+}
+
 /* ---------- kits ---------- */
 
 const KITS = {
   acoustic: {
     kick(ctx, out, noise, t, v) {
-      // Body: fast sine pitch drop
       const osc = makeOsc(ctx, 'sine', 160, t, 0.3);
       osc.frequency.exponentialRampToValueAtTime(52, t + 0.09);
       const g = envGain(ctx, t, 0.95 * v, 0.26);
       osc.connect(g).connect(out);
-      // Beater click
       const click = makeNoise(ctx, noise, t, 0.03);
       const lp = makeFilter(ctx, 'lowpass', 3500);
       const cg = envGain(ctx, t, 0.3 * v, 0.02);
@@ -131,12 +201,10 @@ const KITS = {
       return [osc, click];
     },
     snare(ctx, out, noise, t, v) {
-      // Wires: broadband noise burst
       const n = makeNoise(ctx, noise, t, 0.22);
       const bp = makeFilter(ctx, 'bandpass', 2200, 0.7);
       const ng = envGain(ctx, t, 0.7 * v, 0.18);
       n.connect(bp).connect(ng).connect(out);
-      // Shell: two short tones
       const o1 = makeOsc(ctx, 'triangle', 196, t, 0.12);
       const g1 = envGain(ctx, t, 0.5 * v, 0.09);
       o1.connect(g1).connect(out);
@@ -174,20 +242,34 @@ const KITS = {
       return [o, n];
     },
     hat(ctx, out, noise, t, v) {
-      // Classic 808 metal: six detuned squares through tight filters
-      const ratios = [2, 3, 4.16, 5.43, 6.79, 8.21];
-      const pre = ctx.createGain();
-      pre.gain.value = 0.2;
-      const bp = makeFilter(ctx, 'bandpass', 10000, 1.2);
-      const hp = makeFilter(ctx, 'highpass', 7000);
-      const g = envGain(ctx, t, 0.4 * v, 0.05);
-      pre.connect(bp).connect(hp).connect(g).connect(out);
-      const oscs = ratios.map((r) => {
-        const o = makeOsc(ctx, 'square', 40 * r, t, 0.08);
-        o.connect(pre);
-        return o;
-      });
-      return oscs;
+      return metalHat(ctx, out, t, v, { base: 40, bp: 10000, hp: 7000, decay: 0.05, level: 0.4 });
+    },
+  },
+
+  trap: {
+    kick(ctx, out, noise, t, v) {
+      // Long saturated sub with a sharp click on top
+      const osc = makeOsc(ctx, 'sine', 100, t, 0.75);
+      osc.frequency.exponentialRampToValueAtTime(36, t + 0.1);
+      const drive = makeDrive(ctx, 3.5);
+      const g = envGain(ctx, t, 0.95 * v, 0.65);
+      osc.connect(drive).connect(g).connect(out);
+      const click = makeNoise(ctx, noise, t, 0.012);
+      const hp = makeFilter(ctx, 'highpass', 3000);
+      const cg = envGain(ctx, t, 0.2 * v, 0.008);
+      click.connect(hp).connect(cg).connect(out);
+      return [osc, click];
+    },
+    snare(ctx, out, noise, t, v) {
+      const sources = clap(ctx, out, noise, t, v, { bp: 1500, bpQ: 1, tailHp: 1400, tailLevel: 0.5, tailDecay: 0.22 });
+      const o = makeOsc(ctx, 'sine', 180, t, 0.08);
+      const og = envGain(ctx, t, 0.35 * v, 0.06);
+      o.connect(og).connect(out);
+      sources.push(o);
+      return sources;
+    },
+    hat(ctx, out, noise, t, v) {
+      return metalHat(ctx, out, t, v, { base: 46, bp: 11500, bpQ: 1, hp: 8500, decay: 0.03, level: 0.45 });
     },
   },
 
@@ -206,30 +288,81 @@ const KITS = {
       return [osc, click];
     },
     snare(ctx, out, noise, t, v) {
-      // Clap-style: three quick bursts, then a noise tail
-      const bp = makeFilter(ctx, 'bandpass', 1600, 1.1);
-      bp.connect(out);
-      const sources = [];
-      const bursts = [
-        [0, 0.5], [0.012, 0.4], [0.024, 0.35],
-      ];
-      for (const [dt, level] of bursts) {
-        const n = makeNoise(ctx, noise, t + dt, 0.015);
-        const g = envGain(ctx, t + dt, level * v, 0.013);
-        n.connect(g).connect(bp);
-        sources.push(n);
-      }
-      const tail = makeNoise(ctx, noise, t + 0.036, 0.22);
-      const tg = envGain(ctx, t + 0.036, 0.45 * v, 0.2);
-      tail.connect(tg).connect(bp);
-      sources.push(tail);
-      return sources;
+      return clap(ctx, out, noise, t, v, { bp: 1600, bpQ: 1.1, tailLevel: 0.45, tailDecay: 0.2 });
     },
     hat(ctx, out, noise, t, v) {
       const n = makeNoise(ctx, noise, t, 0.05);
       const bp = makeFilter(ctx, 'bandpass', 9500, 2);
       const hp = makeFilter(ctx, 'highpass', 8000);
       const g = envGain(ctx, t, 0.5 * v, 0.035);
+      n.connect(bp).connect(hp).connect(g).connect(out);
+      return [n];
+    },
+  },
+
+  lofi: {
+    kick(ctx, out, noise, t, v) {
+      // Crushed and dull: heavy drive into a closed-down lowpass
+      const osc = makeOsc(ctx, 'sine', 120, t, 0.28);
+      osc.frequency.exponentialRampToValueAtTime(50, t + 0.07);
+      const drive = makeDrive(ctx, 5);
+      const lp = makeFilter(ctx, 'lowpass', 1800);
+      const g = envGain(ctx, t, 0.9 * v, 0.22);
+      osc.connect(drive).connect(lp).connect(g).connect(out);
+      return [osc];
+    },
+    snare(ctx, out, noise, t, v) {
+      const n = makeNoise(ctx, noise, t, 0.18);
+      const bp = makeFilter(ctx, 'bandpass', 1100, 0.8);
+      const lp = makeFilter(ctx, 'lowpass', 3200);
+      const ng = envGain(ctx, t, 0.75 * v, 0.15);
+      n.connect(bp).connect(lp).connect(ng).connect(out);
+      const o = makeOsc(ctx, 'triangle', 170, t, 0.09);
+      const og = envGain(ctx, t, 0.4 * v, 0.07);
+      o.connect(og).connect(out);
+      return [n, o];
+    },
+    hat(ctx, out, noise, t, v) {
+      // Dusty: band-limited between 5–7 kHz so it sits behind the beat
+      const n = makeNoise(ctx, noise, t, 0.06);
+      const lp = makeFilter(ctx, 'lowpass', 7000);
+      const hp = makeFilter(ctx, 'highpass', 5000);
+      const g = envGain(ctx, t, 0.5 * v, 0.04);
+      n.connect(lp).connect(hp).connect(g).connect(out);
+      return [n];
+    },
+  },
+
+  perc: {
+    kick(ctx, out, noise, t, v) {
+      // Conga: tuned head with a bit of slap
+      const osc = makeOsc(ctx, 'sine', 165, t, 0.22);
+      osc.frequency.exponentialRampToValueAtTime(150, t + 0.02);
+      const g = envGain(ctx, t, 0.8 * v, 0.18);
+      osc.connect(g).connect(out);
+      const slap = makeNoise(ctx, noise, t, 0.025);
+      const bp = makeFilter(ctx, 'bandpass', 1000, 1);
+      const sg = envGain(ctx, t, 0.25 * v, 0.02);
+      slap.connect(bp).connect(sg).connect(out);
+      return [osc, slap];
+    },
+    snare(ctx, out, noise, t, v) {
+      // Block slap: short woody ping plus a click of noise
+      const o = makeOsc(ctx, 'triangle', 800, t, 0.08);
+      const og = envGain(ctx, t, 0.5 * v, 0.055);
+      o.connect(og).connect(out);
+      const n = makeNoise(ctx, noise, t, 0.035);
+      const bp = makeFilter(ctx, 'bandpass', 2500, 2.5);
+      const ng = envGain(ctx, t, 0.3 * v, 0.03);
+      n.connect(bp).connect(ng).connect(out);
+      return [o, n];
+    },
+    hat(ctx, out, noise, t, v) {
+      // Shaker
+      const n = makeNoise(ctx, noise, t, 0.08);
+      const bp = makeFilter(ctx, 'bandpass', 5200, 1.4);
+      const hp = makeFilter(ctx, 'highpass', 3500);
+      const g = envGain(ctx, t, 0.45 * v, 0.06);
       n.connect(bp).connect(hp).connect(g).connect(out);
       return [n];
     },

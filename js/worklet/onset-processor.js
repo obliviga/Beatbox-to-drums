@@ -32,9 +32,15 @@ class OnsetProcessor extends AudioWorkletProcessor {
 
     this.port.onmessage = (e) => {
       const d = e.data;
-      if (d && d.type === 'config') {
+      if (!d) return;
+      if (d.type === 'config') {
         if (typeof d.thresholdRatio === 'number') this.thresholdRatio = d.thresholdRatio;
         if (typeof d.minRms === 'number') this.minRms = d.minRms;
+      } else if (d.type === 'suppress') {
+        // Speaker guard: hold detection closed while our own drum sound
+        // is coming out of the speakers, so it can't re-trigger the mic.
+        const samples = Math.round((d.sec || 0) * sampleRate);
+        if (samples > this.refractory) this.refractory = samples;
       }
     };
   }
