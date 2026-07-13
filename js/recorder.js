@@ -64,12 +64,13 @@ export function encodeWavPCM16(channels, sampleRate) {
  * With `seamless`, decay ringing past the loop end is wrapped back onto
  * the loop start, so the file loops perfectly in a DAW.
  */
-export async function renderLoopWav({ events, loopDur, kit, seamless = false, sampleRate = 44100 }) {
+export async function renderLoopWav({ events, loopDur, kit, sampleKit = null, seamless = false, sampleRate = 44100 }) {
   const OAC = globalThis.OfflineAudioContext || globalThis.webkitOfflineAudioContext;
   const tail = 0.8;
   const lead = 0.02; // scheduling headroom inside the offline context
   const ctx = new OAC(2, Math.ceil((loopDur + tail) * sampleRate), sampleRate);
   const engine = new DrumEngine(ctx);
+  if (sampleKit) engine.registerSampleKit(kit, sampleKit); // AudioBuffers are context-independent
   engine.setKit(kit);
   for (const e of events) {
     engine.trigger(e.type, { when: lead + e.t, velocity: e.velocity });

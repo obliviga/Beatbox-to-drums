@@ -18,6 +18,7 @@ import { LoopRecorder, renderLoopWav, STYLE_LEVELS } from './recorder.js';
 import { Metronome } from './metronome.js';
 import { Timeline } from './timeline.js';
 import { Waveform } from './waveform.js';
+import { loadRealKit } from './sample-kit.js';
 
 const CAPTURE_SAMPLES = 1024; // keep in sync with js/worklet/onset-processor.js
 const SETTINGS_KEY = 'b2d-settings';
@@ -57,7 +58,9 @@ let micSource = null;
 let micOn = false;
 let micBusy = false;
 
-let kitName = 'acoustic';
+let kitName = 'real'; // the sampled acoustic kit is the default sound
+let realKit = null;
+let realKitPromise = null;
 let styleLevel = 'clean';
 let sensitivity = 0.65;
 let speakerGuard = false;
@@ -74,7 +77,9 @@ const loopEnabled = () => (els.loopChk ? els.loopChk.checked : true);
 function loadSettings() {
   let s = {};
   try { s = JSON.parse(localStorage.getItem(SETTINGS_KEY)) || {}; } catch { /* fresh start */ }
-  if (KIT_NAMES.includes(s.kit)) kitName = s.kit;
+  // honor a persisted kit only while the kit chips are visible — the
+  // minimal UI always plays the real sampled kit
+  if (els.chips.length && KIT_NAMES.includes(s.kit)) kitName = s.kit;
   // honor a persisted style only while the style chips are visible —
   // in the minimal UI the conversion is always the sensible default
   if (els.styleChips.length && STYLE_LEVELS.includes(s.styleLevel)) styleLevel = s.styleLevel;
@@ -119,6 +124,15 @@ function ensureAudio() {
     ctx = new AC({ latencyHint: 'interactive' });
     engine = new DrumEngine(ctx);
     engine.setKit(kitName);
+    // Fetch + decode the real drum samples in the background. Until they
+    // land, 'real' transparently falls back to the synthesized acoustic
+    // kit, so nothing ever blocks or stays silent.
+    realKitPromise = loadRealKit(ctx)
+      .then((kit) => {
+        engine.registerSampleKit('real', kit);
+        realKit = kit;
+      })
+      .catch(() => { /* offline first run — synth fallback stays active */ });
     if (waveform) engine.master.connect(waveform.attach(ctx)); // drums show on the waveform
     metronome = new Metronome(ctx, (when, accent) => engine.click(when, accent));
     recorder = new LoopRecorder({
@@ -438,11 +452,21 @@ els.recBtn.addEventListener('click', async () => {
   }
 });
 
-els.playBtn.addEventListener('click', () => {
+els.playBtn.addEventListener('click', async () => {
   ensureAudio();
   syncRecorderSettings();
-  if (recorder.state === 'playing') recorder.stopPlay();
-  else if (recorder.state === 'idle') recorder.play(loopEnabled);
+  if (recorder.state === 'playing') {
+    recorder.stopPlay();
+    return;
+  }
+  if (recorder.state !== 'idle') return;
+  // give the real kit a moment to finish loading so the first playback
+  // already uses the sampled drums (synth fallback covers a slow network)
+  if (kitName === 'real' && !realKit && realKitPromise) {
+    setStatus('Loading drums…');
+    await Promise.race([realKitPromise, new Promise((r) => setTimeout(r, 4000))]);
+  }
+  if (recorder.state === 'idle') recorder.play(loopEnabled);
 });
 
 if (els.clearBtn) {
@@ -465,6 +489,7 @@ if (els.exportBtn) {
         events: recorder.playableEvents(),
         loopDur: recorder.loopDur,
         kit: kitName,
+        sampleKit: kitName === 'real' ? realKit : null,
         seamless: !!recorder.groove,
       });
       const blob = new Blob([wav], { type: 'audio/wav' });

@@ -4,7 +4,9 @@
  * background so the next load picks up new deploys).
  */
 
-const CACHE = 'b2d-v5';
+const CACHE = 'b2d-v6';
+const SAMPLES = ['kick', 'snare', 'hat']
+  .flatMap((d) => [1, 2, 3, 4, 5].map((i) => `samples/real/${d}_${i}.wav`));
 const ASSETS = [
   '.',
   'index.html',
@@ -15,6 +17,8 @@ const ASSETS = [
   'js/recorder.js',
   'js/groove.js',
   'js/waveform.js',
+  'js/sample-kit.js',
+  ...SAMPLES,
   'js/metronome.js',
   'js/timeline.js',
   'js/worklet/onset-processor.js',

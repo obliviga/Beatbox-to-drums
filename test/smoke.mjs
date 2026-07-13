@@ -38,6 +38,7 @@ async function findChromium() {
 const MIME = {
   '.html': 'text/html', '.css': 'text/css', '.js': 'text/javascript',
   '.mjs': 'text/javascript', '.json': 'application/json', '.png': 'image/png',
+  '.wav': 'audio/wav',
 };
 
 function serve(rootDir) {
@@ -137,6 +138,12 @@ try {
   await waitStatus(pageA, /Playing your drums/);
   check((await pageA.textContent('#playBtn')).includes('Stop'), 'Play should toggle to Stop');
   await pageA.waitForTimeout(1200);
+
+  step = 'A: real drum samples loaded';
+  const sampleCount = await pageA.evaluate(() =>
+    performance.getEntriesByType('resource').filter((e) => e.name.includes('/samples/real/')).length);
+  check(sampleCount >= 15, `only ${sampleCount} sample fetches observed`);
+  console.log(`✓ real sampled kit loaded (${sampleCount} sample files fetched)`);
 
   step = 'A: record during playback starts a re-take';
   await pageA.click('#recBtn');

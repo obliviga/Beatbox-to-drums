@@ -2,14 +2,15 @@
 
 Beatbox into your phone's microphone and hear yourself as an actual drum kit — acoustic, 808, trap, electro, lo-fi, or percussion. Everything runs live in the browser: no app install, no server, no audio ever leaves your device.
 
-> **Current UI: intentionally minimal.** While the core record → convert → play flow gets solid, the interface shows only a **Record button**, a **live waveform**, and a **Play button** for the converted beat. Recording is silent capture — you hear the drums only when you press Play — and the mic is active only while a take is in progress. The features described below (kits, pads, sensitivity, metronome, beat styles, timeline, WAV export, …) still exist and are unit-tested — their markup is commented out in `index.html`, and `js/main.js` re-enables each section automatically when uncommented.
+> **Current UI: intentionally minimal.** While the core record → convert → play flow gets solid, the interface shows only a **Record button**, a **live waveform**, and a **Play button** for the converted beat. Recording is silent capture — you hear the drums only when you press Play — and the mic is active only while a take is in progress. Playback uses the **Real Kit**: professionally recorded acoustic drum samples (see below). The features described below (kits, pads, sensitivity, metronome, beat styles, timeline, WAV export, …) still exist and are unit-tested — their markup is commented out in `index.html`, and `js/main.js` re-enables each section automatically when uncommented.
 
 Make a **“B”** sound and a kick drum fires. **“Pss”** and you get a snare. **“Ts”** and a hi-hat plays. Record a loop with zero setup — the app detects your tempo by itself and hands the beat back quantized — then switch kits on it and export it as a WAV for your DAW.
 
 ## Features
 
 - 🎙️ **Live mic → drums** — real-time onset detection and hit classification (kick / snare / hi-hat) with velocity from how hard you hit
-- 🥁 **Six kits, zero samples** — Acoustic, 808, Trap, Electro, Lo-Fi, and Percussion, fully synthesized with the Web Audio API
+- 🥁 **Real Kit** — a professionally recorded acoustic drum kit (GMRockKit by Glen MacArthur, from the Hydrogen drum machine): five true velocity layers per drum, chosen by how hard you beatboxed, with subtle playback-rate humanization so fast rolls never machine-gun. Falls back to synthesis if the samples haven't loaded yet
+- 🎛️ **Six synthesized kits** — Acoustic, 808, Trap, Electro, Lo-Fi, and Percussion, generated with the Web Audio API (currently behind the hidden kit picker)
 - ✨ **Auto-beat** — one button: Record starts the mic if needed; when you stop, the tempo is detected from your hit timing, bar 1 anchors on your first kick, the loop locks to whole bars and starts playing immediately. Nudge the BPM afterwards to re-grid
 - 🪜 **Beat style ladder** — non-destructive, from simple to complex: **Raw** (exactly as played) · **Tight** (snapped to 1/16s) · **Clean** (snapped + accidental doubles merged) · **Full** (adds hi-hats on 8ths, backbeat snares, bar-start kicks — a produced beat from your sketch)
 - 🔁 **Metronome mode** — optional 4-beat count-in with clicks, for when you want to record to a fixed grid
@@ -66,7 +67,7 @@ mic ──► AudioWorklet onset detector ──► ~21 ms attack window
 
 1. **Onset detection** (`js/worklet/onset-processor.js`) runs on the audio rendering thread in 128-sample blocks. A hit is a block whose RMS jumps above both an adaptive noise floor and the previous block (rising edge), gated by a refractory period so one hit can't double-trigger. Browser voice processing (echo cancellation, noise suppression, AGC) is disabled on the mic stream because it smears exactly the transients we're looking for.
 2. **Classification** (`js/classifier.js`) takes the first ~21 ms of the attack, applies a Hann window and a 2048-point FFT, and computes the spectral centroid, low/mid/high band ratios, and zero-crossing rate. A small rule tree maps those to a drum: bass-dominant and dark → kick, bright or noisy (sibilant) → hi-hat, broadband mid → snare.
-3. **Synthesis** (`js/audio-engine.js`) plays the matching voice from the selected kit — the 808 hat is the classic six-detuned-squares metal stack, the trap kick is a long saturated sub, the electro snare is a triple-burst clap. Voices get subtle per-instrument stereo placement and velocity from your input level.
+3. **Playback** (`js/audio-engine.js`, `js/sample-kit.js`) routes each hit to the selected kit. The default **Real Kit** plays recorded samples: your hit velocity picks one of five true velocity layers (soft strokes are *different recordings*, not quieter copies — boundaries come from the kit's own Hydrogen definition), a gentle gain slope smooths the steps, and ±1.5% playback-rate humanization keeps fast rolls from repeating bit-identical audio. The synthesized kits (808 square-stack hat, trap sub kick, electro clap snare, …) remain available and act as an instant fallback while samples load. All voices get subtle per-instrument stereo placement.
 4. **Tempo detection** (`js/groove.js`) needs no audio — just your hit times. Every candidate pulse is scored with circular statistics: map hit times onto a circle whose circumference is the candidate step; if the hits sit on that grid, their phases cluster and the resultant vector is long. The best largest step becomes the sixteenth note (octave-folded into a musical range), and the grid phase falls out of the same math. Three gates keep random timing from producing a fake grid — resultant length, grid inliers, and inter-onset-interval consistency (real rhythms space hits near whole multiples of the pulse). The thresholds were tuned by Monte-Carlo simulation: ~5% false positives on 12 random hits while accepting ≥99.5% of patterns with ±20–30 ms of human jitter.
 5. **Recording** (`js/recorder.js`) timestamps hits on the audio clock (compensating for the detection window), feeds both free and metronome takes through the same groove pipeline, and derives the four style levels non-destructively — Clean merges same-slot doubles, Full generates hats/backbeat/downbeat kicks using the velocities of your own playing. WAV export re-renders the loop through an `OfflineAudioContext` and folds post-loop decay back onto the loop start so exports cycle seamlessly.
 
@@ -99,7 +100,9 @@ index.html                     app shell
 css/style.css                  mobile-first dark UI
 js/main.js                     wiring: mic, pads, kits, recorder, timeline, PWA
 js/classifier.js               FFT + spectral features + rule classifier
-js/audio-engine.js             six synthesized drum kits + metronome click
+js/audio-engine.js             sampled + synthesized kits, metronome click
+js/sample-kit.js               real-kit manifest, loader, velocity layers
+samples/real/                  GMRockKit kick/snare/hat (see LICENSE.md there)
 js/groove.js                   tempo detection + grid fitting + beat styles
 js/recorder.js                 loop recorder, WAV encode/render
 js/metronome.js                look-ahead click scheduler
@@ -108,6 +111,10 @@ js/worklet/onset-processor.js  audio-thread onset detector
 sw.js / manifest.json / icons  PWA install + offline
 test/                          unit tests + headless-browser smoke test
 ```
+
+## Sample credits
+
+The Real Kit uses the kick, snare, and closed hi-hat of **GMRockKit** — recorded by **Glen MacArthur** ([AVL Drumkits](https://x42-plugins.com/x42/x42-avldrums)) / Sebastian Moors — which ships with the [Hydrogen drum machine](https://github.com/hydrogen-music/hydrogen) under the GNU GPL. See `samples/real/LICENSE.md` for details. Thanks for recording a great-sounding kit and sharing it freely.
 
 ## Roadmap ideas
 

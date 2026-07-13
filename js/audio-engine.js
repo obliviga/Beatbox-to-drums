@@ -15,7 +15,9 @@
  * Works against both AudioContext and OfflineAudioContext (WAV export).
  */
 
-export const KIT_NAMES = ['acoustic', 'tr808', 'trap', 'electro', 'lofi', 'perc'];
+import { layerIndex } from './sample-kit.js';
+
+export const KIT_NAMES = ['real', 'acoustic', 'tr808', 'trap', 'electro', 'lofi', 'perc'];
 
 // Subtle stereo placement per instrument, like sitting at a kit
 const PAN = { kick: 0, snare: -0.08, hat: 0.14 };
@@ -25,6 +27,8 @@ export class DrumEngine {
     this.ctx = ctx;
     this.kit = 'acoustic';
     this.scheduled = new Set();
+    this.sampleKits = {};   // name → {kick|snare|hat: {boundaries, buffers}}
+    this._rrPhase = { kick: 0, snare: 0, hat: 0 }; // humanization counter
 
     this.master = ctx.createGain();
     this.master.gain.value = 0.9;
@@ -41,7 +45,12 @@ export class DrumEngine {
   }
 
   setKit(name) {
-    if (KITS[name]) this.kit = name;
+    if (KITS[name] || this.sampleKits[name] || name === 'real') this.kit = name;
+  }
+
+  /** Register decoded sample buffers (see js/sample-kit.js) as a kit. */
+  registerSampleKit(name, kit) {
+    this.sampleKits[name] = kit;
   }
 
   /**
@@ -50,17 +59,39 @@ export class DrumEngine {
    * @param {'kick'|'snare'|'hat'} type
    */
   trigger(type, { when = this.ctx.currentTime, velocity = 1, track = false } = {}) {
-    const voice = KITS[this.kit] && KITS[this.kit][type];
-    if (!voice) return;
     const v = Math.min(1, Math.max(0.05, velocity));
-    const out = this._outputFor(type);
-    const sources = voice(this.ctx, out, this.noiseBuf, when, v);
+    const sampleKit = this.sampleKits[this.kit];
+    let sources;
+    if (sampleKit && sampleKit[type]) {
+      sources = this._playSample(sampleKit[type], type, when, v);
+    } else {
+      // synth voice — also the fallback while the 'real' kit is loading
+      const kitDef = KITS[this.kit] || KITS.acoustic;
+      const voice = kitDef[type];
+      if (!voice) return;
+      sources = voice(this.ctx, this._outputFor(type), this.noiseBuf, when, v);
+    }
     if (track) {
       for (const s of sources) {
         this.scheduled.add(s);
         s.onended = () => this.scheduled.delete(s);
       }
     }
+  }
+
+  _playSample(drum, type, when, v) {
+    const src = this.ctx.createBufferSource();
+    src.buffer = drum.buffers[Math.min(layerIndex(drum.boundaries, v), drum.buffers.length - 1)];
+    // Humanize: alternate tiny detunes so fast rolls never repeat a
+    // bit-identical file (the kit has one recording per layer).
+    const phase = this._rrPhase[type] = (this._rrPhase[type] + 1) % 4;
+    src.playbackRate.value = 1 + (phase - 1.5) * 0.01; // ±1.5%
+    const gain = this.ctx.createGain();
+    // layers carry the timbre; a gentle gain slope smooths steps between them
+    gain.gain.value = 0.7 + 0.3 * v;
+    src.connect(gain).connect(this._outputFor(type));
+    src.start(when);
+    return [src];
   }
 
   /** Metronome click (not part of any kit, never in WAV exports). */
