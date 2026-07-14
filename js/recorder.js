@@ -205,6 +205,34 @@ export class LoopRecorder {
   }
 
   /**
+   * Replace the take's events (e.g. with whole-clip analysis results)
+   * and re-run the groove pipeline on them.
+   * @returns {boolean} true if the take was replaced
+   */
+  replaceTake(events) {
+    if (this.state !== 'idle') return false;
+    this.events = (events || []).slice().sort((a, b) => a.t - b.t);
+    if (!this.events.length) {
+      this.groove = null;
+      this.grooveSource = null;
+      this.loopDur = 0;
+      return true;
+    }
+    const grid = detectGrid(this.events);
+    this.groove = grid ? buildGroove(this.events, grid) : null;
+    if (this.groove) {
+      this.grooveSource = 'auto';
+      this.loopBpm = this.groove.bpm;
+      this.loopDur = this.groove.loopDur;
+    } else {
+      this.grooveSource = null;
+      const lastT = this.events.reduce((m, e) => Math.max(m, e.t), 0);
+      this.loopDur = lastT + 0.7;
+    }
+    return true;
+  }
+
+  /**
    * Re-fit the grid of an auto-detected loop at a user-chosen tempo.
    * @returns {boolean} true if the loop was re-gridded
    */

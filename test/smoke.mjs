@@ -103,15 +103,15 @@ try {
   await pageA.waitForTimeout(300);
 
   step = 'A: minimal UI';
-  for (const sel of ['#micBtn', '.pad', '.chip', '#bpmInput', '#exportBtn', '#timeline', '#debugChk']) {
+  for (const sel of ['#micBtn', '.pad', '.chip', '#bpmInput', '#exportBtn', '#timeline', '#debugChk', '#tuneBtn']) {
     check((await pageA.$(sel)) === null, `${sel} should be hidden in the minimal UI`);
   }
-  for (const sel of ['#recBtn', '#origBtn', '#playBtn', '#waveform', '#tuneBtn']) {
+  for (const sel of ['#recBtn', '#origBtn', '#playBtn', '#waveform']) {
     check((await pageA.$(sel)) !== null, `${sel} missing`);
   }
   check(await pageA.$eval('#playBtn', (el) => el.disabled), 'Drums should start disabled');
   check(await pageA.$eval('#origBtn', (el) => el.disabled), 'Original should start disabled');
-  console.log('✓ minimal UI: Record, waveform, Original, Drums, tune');
+  console.log('✓ minimal UI: Record, waveform, Original, Drums');
 
   step = 'A: service worker';
   const swOk = await pageA.evaluate(() => Promise.race([
@@ -163,15 +163,6 @@ try {
   await pageA.click('#recBtn');
   await waitStatus(pageA, /▶ Drums/);
   console.log('✓ playback, and Record-while-playing re-takes cleanly');
-
-  step = 'A: tune to my voice';
-  await pageA.click('#tuneBtn');
-  await waitStatus(pageA, /Tuning 1\/3/);
-  await waitStatus(pageA, /Tuned to your voice/, 30000); // fake mic pulses feed the examples
-  const profileSaved = await pageA.evaluate(() => !!localStorage.getItem('b2d-voice-profile-v1'));
-  check(profileSaved, 'voice profile not persisted');
-  check((await pageA.textContent('#tuneBtn')).includes('Re-tune'), 'tune button should show tuned state');
-  console.log('✓ voice tuning: 3 stages collected, profile learned and persisted');
   await ctxA.close();
 
   /* ============ Context B: microphone denied (keyboard-driven hits) ============ */
@@ -214,19 +205,16 @@ try {
   await pageB.click('#playBtn');
   console.log('✓ converted beat plays and stops');
 
-  step = 'B: no mic means no original take, and tuning explains itself';
+  step = 'B: no mic means no original take';
   check(await pageB.$eval('#origBtn', (el) => el.disabled), 'Original should stay disabled without mic audio');
-  await pageB.click('#tuneBtn');
-  await waitStatus(pageB, /denied/);
-  check((await pageB.textContent('#tuneBtn')).includes('Tune to my voice'), 'tuning should not start without a mic');
-  console.log('✓ mic-less paths degrade clearly (no Original, tuning reports denial)');
+  console.log('✓ mic-less takes degrade clearly (no Original playback)');
 
   step = 'B: empty take gives explicit feedback';
   await pageB.click('#recBtn');
   await waitStatus(pageB, /Recording/);
   await pageB.waitForTimeout(700);
   await pageB.click('#recBtn');
-  await waitStatus(pageB, /No hits captured/);
+  await waitStatus(pageB, /No hits found/);
   console.log('✓ empty take explains itself');
   await ctxB.close();
 

@@ -19,6 +19,7 @@ import { Metronome } from './metronome.js';
 import { Timeline } from './timeline.js';
 import { Waveform } from './waveform.js';
 import { loadRealKit } from './sample-kit.js';
+import { analyzeClip } from './clip-analysis.js';
 
 const CAPTURE_SAMPLES = 1024; // keep in sync with js/worklet/onset-processor.js
 const SETTINGS_KEY = 'b2d-settings';
@@ -77,6 +78,7 @@ let rawTakeBuffer = null;
 let originalPlaying = false;
 let origSource = null;
 let micReleaseTimer = null;
+let pendingAnalysis = false; // whole-clip analysis runs once the take flushes
 
 // Personal voice profile ("Tune to my voice") — on-device k-NN
 const PROFILE_KEY = 'b2d-voice-profile-v1';
@@ -318,6 +320,17 @@ function finalizeRawTake() {
     rawTakeBuffer = buf;
   }
   rawChunks = [];
+  if (pendingAnalysis) {
+    pendingAnalysis = false;
+    if (rawTakeBuffer && recorder && recorder.state === 'idle') {
+      // Convert from the WHOLE clip: onsets and drum identities are
+      // decided from this take's own context (clustering), so no fixed
+      // thresholds or per-user training are involved.
+      const events = analyzeClip(rawTakeBuffer.getChannelData(0), ctx.sampleRate);
+      recorder.replaceTake(events);
+    }
+    showTakeSummary();
+  }
   updateTransportUI();
 }
 
@@ -724,14 +737,16 @@ function onRecorderState(state) {
   // The mic is hot only while a take is being captured — release it as
   // soon as recording ends so nothing can trigger between takes.
   if (state === 'idle' && prevRecorderState === 'recording' && micOn && workletNode) {
-    // ask the worklet to flush the raw stream, then let go of the mic —
-    // unless a re-take or a tuning session claimed it in the meantime
+    // ask the worklet to flush the raw stream (which triggers the
+    // whole-clip analysis), then let go of the mic — unless a re-take
+    // or a tuning session claimed it in the meantime
+    pendingAnalysis = true;
     workletNode.port.postMessage({ type: 'stream', on: false });
     clearTimeout(micReleaseTimer);
     micReleaseTimer = setTimeout(() => {
       micReleaseTimer = null;
       if (calibration || !recorder || recorder.state === 'recording' || recorder.state === 'armed') return;
-      if (!rawTakeBuffer && rawChunks.length) finalizeRawTake();
+      if (pendingAnalysis || rawChunks.length) finalizeRawTake();
       if (micOn) stopMicQuiet();
     }, 150);
   } else if (state === 'idle' && (prevRecorderState === 'recording' || prevRecorderState === 'armed') && micOn) {
@@ -744,28 +759,10 @@ function onRecorderState(state) {
   } else if (state === 'playing') {
     setStatus('Playing your drums ▶');
   } else if (prevRecorderState === 'recording') {
-    // just stopped a take — report what the conversion found
-    if (!recorder.events.length) {
-      setStatus('No hits captured — beatbox close to the mic with short, punchy sounds, then try again.', true);
-    } else {
-      let summary;
-      if (recorder.grooveSource === 'auto') {
-        summary = `Converted ✓ ${recorder.loopBpm} BPM · ${recorder.bars()}-bar drum loop`;
-        if (els.bpmInput) {
-          els.bpmInput.value = String(recorder.loopBpm);
-          saveSettings();
-        }
-      } else if (recorder.grooveSource === 'metronome') {
-        summary = `Loop locked to ${recorder.bars()} bar${recorder.bars() === 1 ? '' : 's'} at ${recorder.loopBpm} BPM`;
-      } else {
-        summary = `Captured ${recorder.events.length} hit${recorder.events.length === 1 ? '' : 's'}`;
-      }
-      takeSummary = summary;
-      setStatus(`${summary} — ▶ Drums to hear it, ▶ Original for your take`);
-      els.playBtn.classList.add('ready');
-      // Auto-play is disabled while the UI is minimal — Play is the star.
-      // autoPlay(summary);
-    }
+    // whole-clip analysis reports its own summary once the take flushes;
+    // mic-less takes (keyboard/pads) summarize immediately
+    if (pendingAnalysis) setStatus('Analyzing your take…');
+    else showTakeSummary();
   } else if (prevRecorderState === 'armed') {
     setStatus('Count-in cancelled — nothing recorded. Press ● Record to try again.');
   } else {
@@ -778,6 +775,32 @@ function onRecorderState(state) {
   updateRecCount();
   updateTransportUI();
   reflectStyleChips();
+}
+
+function showTakeSummary() {
+  if (!recorder || !recorder.events.length) {
+    setStatus('No hits found — beatbox close to the mic with short, punchy sounds, then try again.', true);
+    updateRecCount();
+    updateTransportUI();
+    return;
+  }
+  let summary;
+  if (recorder.grooveSource === 'auto') {
+    summary = `Converted ✓ ${recorder.loopBpm} BPM · ${recorder.bars()}-bar drum loop`;
+    if (els.bpmInput) {
+      els.bpmInput.value = String(recorder.loopBpm);
+      saveSettings();
+    }
+  } else if (recorder.grooveSource === 'metronome') {
+    summary = `Loop locked to ${recorder.bars()} bar${recorder.bars() === 1 ? '' : 's'} at ${recorder.loopBpm} BPM`;
+  } else {
+    summary = `Captured ${recorder.events.length} hit${recorder.events.length === 1 ? '' : 's'}`;
+  }
+  takeSummary = summary;
+  setStatus(`${summary} — ▶ Drums to hear it, ▶ Original for your take`);
+  els.playBtn.classList.add('ready');
+  updateRecCount();
+  updateTransportUI();
 }
 
 // Kept for when the fuller UI returns — plays the loop right after a take.
