@@ -381,6 +381,28 @@ input[type="number"]:disabled { opacity: 0.4; }
 .map-wrap { background: var(--bg-card); border-radius: var(--radius); padding: 10px; }
 .map-wrap #timeline { height: 84px; }
 
+.style-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.style-kits { justify-content: center; }
+.save-btn {
+  border: 1px solid rgba(77, 214, 193, 0.45);
+  border-radius: 14px;
+  background: linear-gradient(180deg, var(--bg-card-2), var(--bg-card));
+  color: var(--snare);
+  font-size: 1rem;
+  font-weight: 700;
+  padding: 14px 10px;
+  cursor: pointer;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+  transition: transform 0.08s ease;
+}
+.save-btn:active { transform: scale(0.98); }
+.save-btn:disabled { opacity: 0.35; cursor: default; }
+
 /* Tip + debug + footer */
 .tip {
   background: rgba(108, 140, 255, 0.08);

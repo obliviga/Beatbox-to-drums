@@ -97,7 +97,7 @@ const wavePixels = (page) => page.evaluate(() => {
 
 try {
   /* ================= Context A: working (fake) microphone ================= */
-  const ctxA = await browser.newContext({ permissions: ['microphone'] });
+  const ctxA = await browser.newContext({ permissions: ['microphone'], acceptDownloads: true });
   const pageA = await ctxA.newPage();
   activePage = pageA;
   wirePage(pageA);
@@ -105,14 +105,16 @@ try {
   await pageA.waitForTimeout(300);
 
   step = 'A: minimal UI';
-  for (const sel of ['#micBtn', '.pad', '.chip', '#bpmInput', '#exportBtn', '#debugChk', '#tuneBtn']) {
+  for (const sel of ['#micBtn', '.pad', '#bpmInput', '#debugChk', '#tuneBtn']) {
     check((await pageA.$(sel)) === null, `${sel} should be hidden in the minimal UI`);
   }
-  for (const sel of ['#recBtn', '#origBtn', '#playBtn', '#waveform', '#timeline']) {
+  for (const sel of ['#recBtn', '#origBtn', '#playBtn', '#waveform', '#timeline', '#exportBtn']) {
     check((await pageA.$(sel)) !== null, `${sel} missing`);
   }
+  check((await pageA.$$('.chip[data-kit]')).length === 7, 'expected 7 style chips');
   check(await pageA.$eval('#playBtn', (el) => el.disabled), 'Drums should start disabled');
   check(await pageA.$eval('#origBtn', (el) => el.disabled), 'Original should start disabled');
+  check(await pageA.$eval('#exportBtn', (el) => el.disabled), 'Save should start disabled');
   check(await pageA.$eval('#mapWrap', (el) => el.hidden), 'beat map should start hidden');
   const versionText = (await pageA.textContent('#versionLine')).trim();
   check(/v\d+ · \d{4}-\d{2}-\d{2}/.test(versionText), `version line missing/malformed: "${versionText}"`);
@@ -227,6 +229,18 @@ try {
   });
   check(choke.open > choke.choked * 3, `choke ineffective: open tail ${choke.open.toFixed(4)} vs choked ${choke.choked.toFixed(4)}`);
   console.log(`✓ hi-hat choke: ringing tail ${(choke.open / Math.max(choke.choked, 1e-9)).toFixed(1)}× louder unchoked`);
+
+  step = 'A: style switch + save beat sample';
+  await pageA.click('.chip[data-kit="tr808"]');
+  check(!(await pageA.$eval('#exportBtn', (el) => el.disabled)), 'Save should be enabled after a take');
+  const dlPromise = pageA.waitForEvent('download', { timeout: 20000 });
+  await pageA.click('#exportBtn');
+  const download = await dlPromise;
+  const wavBytes = await readFile(await download.path());
+  check(wavBytes.subarray(0, 4).toString() === 'RIFF' && wavBytes.subarray(8, 12).toString() === 'WAVE', 'not a WAV file');
+  check(/beatbox-loop-.*tr808\.wav/.test(download.suggestedFilename()), `filename: ${download.suggestedFilename()}`);
+  console.log(`✓ style switched to 808, sample saved: ${download.suggestedFilename()} (${wavBytes.length} bytes)`);
+  await pageA.click('.chip[data-kit="real"]');
 
   step = 'A: record during playback starts a re-take';
   await pageA.click('#recBtn');

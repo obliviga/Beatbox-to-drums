@@ -777,7 +777,9 @@ if (els.clearBtn) {
 
 if (els.exportBtn) {
   els.exportBtn.addEventListener('click', async () => {
-    if (!recorder || !recorder.events.length || recorder.state !== 'idle') return;
+    // saving is allowed while the loop plays — the render is offline
+    if (!recorder || !recorder.events.length
+      || recorder.state === 'recording' || recorder.state === 'armed' || calibration) return;
     els.exportBtn.disabled = true;
     setStatus('Rendering WAV…');
     try {
@@ -963,7 +965,9 @@ function updateTransportUI() {
   }
 
   if (els.clearBtn) els.clearBtn.disabled = state !== 'idle' || !hasEvents;
-  if (els.exportBtn) els.exportBtn.disabled = state !== 'idle' || !hasEvents;
+  if (els.exportBtn) {
+    els.exportBtn.disabled = !hasEvents || state === 'recording' || state === 'armed' || !!calibration;
+  }
   if (els.bpmInput) els.bpmInput.disabled = state !== 'idle';
   if (els.metChk) els.metChk.disabled = state !== 'idle';
   // the beat map appears once there's a take to show

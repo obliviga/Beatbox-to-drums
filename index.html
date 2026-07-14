@@ -36,6 +36,20 @@
       <canvas id="timeline" aria-label="Converted beat map"></canvas>
     </section>
 
+    <!-- style = which kit renders your beat; switch it live, then save -->
+    <section class="style-section">
+      <div class="chips chips-sm style-kits" role="group" aria-label="Drum style">
+        <button class="chip active" data-kit="real">Real Kit</button>
+        <button class="chip" data-kit="acoustic">Acoustic</button>
+        <button class="chip" data-kit="tr808">808</button>
+        <button class="chip" data-kit="trap">Trap</button>
+        <button class="chip" data-kit="electro">Electro</button>
+        <button class="chip" data-kit="lofi">Lo-Fi</button>
+        <button class="chip" data-kit="perc">Perc</button>
+      </div>
+      <button id="exportBtn" class="save-btn" disabled>⬇ Save beat sample (WAV)</button>
+    </section>
+
     <!-- Voice tuning is no longer needed: conversion now analyzes the whole
          clip and clusters your own sounds against each other (no training).
          Kept for a possible future "advanced" mode:
@@ -82,19 +96,6 @@
 
     <section class="controls">
       <div class="control-group">
-        <span class="control-label">Kit</span>
-        <div class="chips" role="group" aria-label="Drum kit">
-          <button class="chip active" data-kit="real">Real Kit</button>
-          <button class="chip" data-kit="acoustic">Acoustic</button>
-          <button class="chip" data-kit="tr808">808</button>
-          <button class="chip" data-kit="trap">Trap</button>
-          <button class="chip" data-kit="electro">Electro</button>
-          <button class="chip" data-kit="lofi">Lo-Fi</button>
-          <button class="chip" data-kit="perc">Perc</button>
-        </div>
-      </div>
-
-      <div class="control-group">
         <label class="control-label" for="sensSlider">Sensitivity</label>
         <input id="sensSlider" type="range" min="0" max="100" value="65" />
         <label class="inline-toggle" title="Blocks the mic briefly after each drum sound so speakers can't re-trigger it">
@@ -130,7 +131,6 @@
         <div class="transport">
           <label class="loop-toggle"><input id="loopChk" type="checkbox" checked /> Loop</label>
           <button id="clearBtn" class="t-btn" disabled>✕ Clear</button>
-          <button id="exportBtn" class="t-btn" disabled>⬇ WAV</button>
         </div>
         <p id="recCount" class="rec-count">No hits recorded</p>
       </div>
