@@ -1,6 +1,6 @@
 # Beatbox → Drums 🥁
 
-Beatbox into your phone's microphone and hear yourself as an actual drum kit — acoustic, 808, trap, electro, lo-fi, or percussion. Everything runs live in the browser: no app install, no server, no audio ever leaves your device.
+Beatbox into your phone's microphone and hear yourself as an actual drum kit — acoustic, 808, trap, electro, lo-fi, or percussion. Everything runs live in the browser: no app install, no server, and audio never leaves your device — except the optional **✨ Restyle with AI** feature, which sends your rendered beat (never the raw mic recording) to a generative audio model only when you tap Generate, using your own API key.
 
 > **Current UI: intentionally minimal.** While the core record → convert → play flow gets solid, the interface shows a **Record button**, a **live waveform**, **▶ Original** (plays back the raw audio you actually recorded), **▶ Drums** (plays the converted beat on the real sampled kit), and **🎯 Tune to my voice**. Recording is silent capture — you hear the drums only on ▶ Drums — and the mic is active only while a take (or tuning) is in progress. The features described below (kits, pads, sensitivity, metronome, beat styles, timeline, WAV export, …) still exist and are unit-tested — their markup is commented out in `index.html`, and `js/main.js` re-enables each section automatically when uncommented.
 
@@ -20,6 +20,7 @@ Make a **“B”** sound and a kick drum fires. **“Pss”** and you get a snar
 - 🔁 **Metronome mode** — optional 4-beat count-in with clicks, for when you want to record to a fixed grid
 - 📊 **Timeline** — see your loop on a three-lane grid with a live playhead
 - 💾 **WAV export** — renders offline; bar-locked loops wrap their decay tails around so the file loops seamlessly in a DAW
+- ✨ **AI restyle (optional)** — one tap sends your rendered beat to a generative audio model (Stability AI *Stable Audio 2*, audio-to-audio) and returns one produced, reimagined take you can play and save. Uses your own API key through your own tiny relay — see [AI restyle setup](#-ai-restyle-optional)
 - 🔊 **Speaker guard** — briefly gates detection after each drum sound so speakers can't re-trigger the mic (for playing without headphones)
 - 🎚️ **Sensitivity control**, 👆 **tap pads**, ⌨️ **keyboard pads** (A/S/D, R to record, Space to play)
 - 📱 **Installable PWA** — add it to your home screen, works offline
@@ -53,6 +54,20 @@ Get close to the mic and keep sounds short and punchy. Turn on *Show detection d
 **Making a loop:** just hit *Record* and beatbox — no setup, and the mic starts automatically if it isn't on. When you stop, the app detects your tempo, locks the loop to whole bars (bar 1 starts on your first kick; anything you played before it wraps to the loop's end as a pickup), and **immediately starts playing it back** at the selected **beat style**. Flip between Raw / Tight / Clean / Full any time — your original take is always kept. If the detected BPM isn't what you meant (e.g. it heard your 8ths as 16ths), nudge the BPM field and the loop re-grids. Pressing *Record* during playback stops the loop and starts a fresh take. *⬇ WAV* renders the loop to a file.
 
 Prefer recording to a click? Enable *Metronome*, set a BPM, and Record gives you a 4-beat count-in first, with a visible countdown (handy when the phone is muted). Pressing the button during the count-in cancels without touching your previous loop. If no steady tempo can be heard in a free take (it needs ~6+ hits with intentional timing), the take stays available raw.
+
+## ✨ AI restyle (optional)
+
+The converter maps your mouth sounds onto drum samples. **Restyle with AI** goes one step further: it hands your beat to a generative audio model (Stability AI's **Stable Audio 2**, audio-to-audio) and gets back one fully *produced* take that follows your rhythm but reimagines the sound. One tap = one take, generated with **your own API key** — there's no shared backend and nothing to subscribe to in the app.
+
+**One-time setup (~2 minutes):**
+
+1. **Get a Stability AI key** at [platform.stability.ai](https://platform.stability.ai) — new accounts include free credits, and after that a take costs on the order of a few cents.
+2. **Deploy the relay**: browsers can't call `api.stability.ai` directly (no CORS), so you run your own tiny forwarder. On [dash.cloudflare.com](https://dash.cloudflare.com) → *Workers & Pages* → *Create Worker*, paste the contents of [`worker/relay.js`](worker/relay.js), and deploy — the free tier is far more than enough. The worker only forwards the one endpoint the app uses; it is not a general-purpose proxy.
+3. **Point the app at it**: record a beat, tap **✨ Restyle with AI**, and paste your `https://….workers.dev` URL. For the key, either store it in the worker as a secret named `STABILITY_API_KEY` (*Settings → Variables* — recommended, the key never touches the browser), or paste it into the app, where it's kept in `localStorage` and sent only to *your* relay.
+
+Then tap **✨ Generate one take** (15–40 s), and play or save the result alongside your original and the sample-based conversion. The style prompt is editable — try "boom bap drum break, dusty vinyl" or "tight metal kit, roomy toms".
+
+**Privacy:** this is the only feature that sends audio anywhere. What's uploaded is the *rendered drum loop* (the same thing ⬇ Save exports — never your raw voice recording), it happens only when you tap Generate, and it goes to your own relay and on to the AI provider. Everything else in the app stays 100% on-device.
 
 ## How it works
 
@@ -93,8 +108,8 @@ npm install     # only needed for the browser smoke test
 npm run smoke   # drives the full app in headless Chromium with a fake mic
 ```
 
-- `test/unit/` covers the classifier (against synthesized kick/snare/hat waveforms), the onset detector (driven block-by-block, including an end-to-end capture→classify test), the groove analysis (tempo detection with jitter, pickup wrapping, style ladder, random-timing rejection), and the recorder's bar math and WAV encoding.
-- `test/smoke.mjs` exercises the real thing: mic start, all kits, auto-beat detection from timed taps, the style ladder, re-gridding, count-in recording, WAV download, persistence, and the service worker.
+- `test/unit/` covers the classifier (against synthesized kick/snare/hat waveforms), the onset detector (driven block-by-block, including an end-to-end capture→classify test), the groove analysis (tempo detection with jitter, pickup wrapping, style ladder, random-timing rejection), the recorder's bar math and WAV encoding, and the AI-restyle client (request format, config persistence, error mapping — with an injected `fetch`, no network).
+- `test/smoke.mjs` exercises the real thing: mic start, all kits, auto-beat detection from timed taps, the style ladder, re-gridding, count-in recording, WAV download, persistence, the service worker, and the AI restyle flow against a route-intercepted mock relay (no real network).
 - CI (`.github/workflows/ci.yml`) runs the unit tests on every push and PR.
 
 ## Project layout
@@ -110,6 +125,8 @@ js/sample-kit.js               real-kit manifest, loader, velocity layers
 samples/real/                  GMRockKit kick/snare/hat (see LICENSE.md there)
 js/groove.js                   tempo detection + grid fitting + beat styles
 js/recorder.js                 loop recorder, WAV encode/render
+js/neural.js                   AI restyle client (config, request, errors)
+worker/relay.js                copy-paste Cloudflare Worker: CORS relay for the AI API
 js/metronome.js                look-ahead click scheduler
 js/timeline.js                 canvas loop view
 js/worklet/onset-processor.js  audio-thread onset detector

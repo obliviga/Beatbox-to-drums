@@ -402,6 +402,41 @@ input[type="number"]:disabled { opacity: 0.4; }
 }
 .save-btn:active { transform: scale(0.98); }
 .save-btn:disabled { opacity: 0.35; cursor: default; }
+.save-btn.small { font-size: 0.9rem; padding: 11px 10px; }
+.save-btn.ghost { color: var(--text-dim); border-color: #2c3147; }
+
+.ai-section { display: flex; flex-direction: column; gap: 10px; }
+.ai-btn { color: #d7a8ff; border-color: rgba(196, 140, 255, 0.45); }
+.ai-panel {
+  background: var(--bg-card);
+  border: 1px solid #2c3147;
+  border-radius: var(--radius);
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.ai-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  color: var(--text-dim);
+  font-size: 0.82rem;
+}
+.ai-field input {
+  border: 1px solid #2c3147;
+  background: var(--bg-card-2);
+  color: var(--text);
+  border-radius: 8px;
+  padding: 9px 10px;
+  font-size: 0.9rem;
+}
+.ai-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+.big-btn.small { font-size: 0.95rem; padding: 12px 10px; }
 
 /* Tip + debug + footer */
 .tip {

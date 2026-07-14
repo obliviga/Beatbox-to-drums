@@ -21,6 +21,9 @@ import { Waveform } from './waveform.js';
 import { loadRealKit } from './sample-kit.js';
 import { analyzeClip } from './clip-analysis.js';
 import { VERSION } from './version.js';
+import {
+  loadNeuralConfig, saveNeuralConfig, isConfigured, generateRestyle, DEFAULT_STRENGTH,
+} from './neural.js';
 
 const CAPTURE_SAMPLES = 1024; // keep in sync with js/worklet/onset-processor.js
 const SETTINGS_KEY = 'b2d-settings';
@@ -47,6 +50,16 @@ const els = {
   recCount: document.getElementById('recCount'),
   mapWrap: document.getElementById('mapWrap'),
   timelineCanvas: document.getElementById('timeline'),
+  aiBtn: document.getElementById('aiBtn'),
+  aiPanel: document.getElementById('aiPanel'),
+  aiPrompt: document.getElementById('aiPrompt'),
+  aiRelay: document.getElementById('aiRelay'),
+  aiKey: document.getElementById('aiKey'),
+  aiGenerate: document.getElementById('aiGenerate'),
+  aiClose: document.getElementById('aiClose'),
+  aiRow: document.getElementById('aiRow'),
+  aiPlayBtn: document.getElementById('aiPlayBtn'),
+  aiSaveBtn: document.getElementById('aiSaveBtn'),
   waveformCanvas: document.getElementById('waveform'),
   debugChk: document.getElementById('debugChk'),
   debugLine: document.getElementById('debugLine'),
@@ -96,6 +109,14 @@ let lastSoundCount = null;   // distinct sound groups the analysis heard
 // once the mic is released, so playback returns to the media speaker.
 let ctxTainted = false;
 let rebuildingAudio = false;
+
+// AI restyle (one take at a time, user's own key, optional)
+let aiBusy = false;
+let aiBlob = null;
+let aiType = 'audio/mpeg';
+let aiUrl = null;
+let aiAudio = null;
+let aiPlaying = false;
 
 // Personal voice profile ("Tune to my voice") — on-device k-NN
 const PROFILE_KEY = 'b2d-voice-profile-v1';
@@ -589,6 +610,7 @@ els.playBtn.addEventListener('click', async () => {
   ensureAudio();
   syncRecorderSettings();
   if (originalPlaying) stopOriginal();
+  if (aiPlaying) stopAiTake();
   if (recorder.state === 'playing') {
     recorder.stopPlay();
     return;
@@ -645,6 +667,7 @@ function playOriginal() {
   if (!rawTakeBuffer || originalPlaying || calibration) return;
   ensureAudio();
   if (recorder.state === 'playing') recorder.stopPlay();
+  if (aiPlaying) stopAiTake();
   const url = ensureOriginalUrl();
   if (!url) return;
   if (!origAudio) {
@@ -811,6 +834,140 @@ if (els.exportBtn) {
   });
 }
 
+/* ---------- AI restyle (one take) ---------- */
+
+function invalidateAiTake() {
+  if (aiPlaying) stopAiTake();
+  if (aiUrl) {
+    URL.revokeObjectURL(aiUrl);
+    aiUrl = null;
+  }
+  aiBlob = null;
+  if (els.aiRow) els.aiRow.hidden = true;
+}
+
+function stopAiTake() {
+  if (aiAudio && aiPlaying) {
+    aiAudio.pause();
+    aiAudio.currentTime = 0;
+    onAiEnded();
+  }
+}
+
+function onAiEnded() {
+  aiPlaying = false;
+  setStatus(takeSummary ? `${takeSummary} — ▶ Drums to hear it, ▶ Original for your take` : 'Press ● Record and beatbox');
+  updateTransportUI();
+}
+
+function playAiTake() {
+  if (!aiUrl || aiPlaying) return;
+  ensureAudio();
+  if (recorder.state === 'playing') recorder.stopPlay();
+  if (originalPlaying) stopOriginal();
+  if (!aiAudio) {
+    aiAudio = new Audio();
+    aiAudio.setAttribute('playsinline', '');
+    aiAudio.preload = 'auto';
+    aiAudio.addEventListener('ended', onAiEnded);
+  }
+  if (aiAudio.src !== aiUrl) aiAudio.src = aiUrl;
+  aiAudio.currentTime = 0;
+  aiPlaying = true;
+  aiAudio.play().catch(() => {
+    aiPlaying = false;
+    setStatus('Couldn’t play the AI take — try again.', true);
+    updateTransportUI();
+  });
+  setStatus('Playing the AI take ✨');
+  updateTransportUI();
+}
+
+function openAiPanel() {
+  const cfg = loadNeuralConfig();
+  if (els.aiPrompt && !els.aiPrompt.value) els.aiPrompt.value = cfg.prompt;
+  if (els.aiRelay && !els.aiRelay.value) els.aiRelay.value = cfg.relayUrl;
+  if (els.aiKey && !els.aiKey.value) els.aiKey.value = cfg.apiKey;
+  els.aiPanel.hidden = !els.aiPanel.hidden;
+}
+
+async function runAiGenerate() {
+  if (aiBusy || !recorder || !recorder.events.length) return;
+  if (recorder.state === 'recording' || recorder.state === 'armed' || calibration) return;
+  const cfg = {
+    prompt: (els.aiPrompt?.value || '').trim() || loadNeuralConfig().prompt,
+    relayUrl: (els.aiRelay?.value || '').trim(),
+    apiKey: (els.aiKey?.value || '').trim(),
+    strength: DEFAULT_STRENGTH,
+  };
+  saveNeuralConfig(cfg);
+  if (!isConfigured(cfg)) {
+    setStatus('Add your relay URL first — see worker/relay.js in the repo (2-minute setup).', true);
+    return;
+  }
+  aiBusy = true;
+  updateTransportUI();
+  setStatus('✨ Generating your AI take… (usually 15–40 s)');
+  try {
+    // give the model musical context: several passes of the loop
+    const base = recorder.playableEvents();
+    const dur = recorder.loopDur || 2;
+    const passes = Math.max(1, Math.min(8, Math.ceil(8 / dur)));
+    const events = [];
+    for (let p = 0; p < passes; p++) {
+      for (const e of base) events.push({ ...e, t: e.t + p * dur });
+    }
+    const wav = await renderLoopWav({
+      events,
+      loopDur: dur * passes,
+      kit: kitName,
+      sampleKit: kitName === 'real' ? realKit : null,
+    });
+    const { blob, type } = await generateRestyle({
+      wav,
+      prompt: cfg.prompt,
+      strength: cfg.strength,
+      durationSec: dur * passes,
+      relayUrl: cfg.relayUrl,
+      apiKey: cfg.apiKey,
+    });
+    invalidateAiTake();
+    aiBlob = blob;
+    aiType = type;
+    aiUrl = URL.createObjectURL(blob);
+    if (els.aiRow) els.aiRow.hidden = false;
+    if (els.aiPanel) els.aiPanel.hidden = true;
+    setStatus('✨ AI take ready — ▶ AI take to hear it');
+  } catch (err) {
+    setStatus((err && err.message) || 'AI generation failed.', true);
+  } finally {
+    aiBusy = false;
+    updateTransportUI();
+  }
+}
+
+if (els.aiBtn) els.aiBtn.addEventListener('click', openAiPanel);
+if (els.aiClose) els.aiClose.addEventListener('click', () => { els.aiPanel.hidden = true; });
+if (els.aiGenerate) els.aiGenerate.addEventListener('click', runAiGenerate);
+if (els.aiPlayBtn) {
+  els.aiPlayBtn.addEventListener('click', () => {
+    if (aiPlaying) stopAiTake();
+    else playAiTake();
+  });
+}
+if (els.aiSaveBtn) {
+  els.aiSaveBtn.addEventListener('click', () => {
+    if (!aiUrl) return;
+    const a = document.createElement('a');
+    a.href = aiUrl;
+    const ext = /wav/i.test(aiType) ? 'wav' : 'mp3';
+    a.download = `beatbox-ai-${recorder && recorder.loopBpm ? recorder.loopBpm + 'bpm' : 'take'}.${ext}`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  });
+}
+
 function onRecorderState(state) {
   if (state === 'recording') {
     // capture the raw take alongside the detected hits
@@ -818,6 +975,7 @@ function onRecorderState(state) {
     rawTakeBuffer = null;
     lastSoundCount = null;
     invalidateOriginalUrl();
+    invalidateAiTake();
     if (workletNode) workletNode.port.postMessage({ type: 'stream', on: true });
   }
   // The mic is hot only while a take is being captured — release it as
@@ -967,6 +1125,15 @@ function updateTransportUI() {
   if (els.clearBtn) els.clearBtn.disabled = state !== 'idle' || !hasEvents;
   if (els.exportBtn) {
     els.exportBtn.disabled = !hasEvents || state === 'recording' || state === 'armed' || !!calibration;
+  }
+  if (els.aiBtn) {
+    els.aiBtn.disabled = !hasEvents || state === 'recording' || state === 'armed' || !!calibration || aiBusy;
+    els.aiBtn.textContent = aiBusy ? '✨ Generating…' : '✨ Restyle with AI';
+  }
+  if (els.aiGenerate) els.aiGenerate.disabled = aiBusy;
+  if (els.aiPlayBtn) {
+    els.aiPlayBtn.textContent = aiPlaying ? '■ Stop' : '▶ AI take';
+    els.aiPlayBtn.classList.toggle('playing', aiPlaying);
   }
   if (els.bpmInput) els.bpmInput.disabled = state !== 'idle';
   if (els.metChk) els.metChk.disabled = state !== 'idle';

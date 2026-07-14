@@ -50,6 +50,34 @@
       <button id="exportBtn" class="save-btn" disabled>⬇ Save beat sample (WAV)</button>
     </section>
 
+    <!-- optional: one AI-reimagined take of the beat, via the user's own
+         key + relay (the only feature that sends audio off the device) -->
+    <section class="ai-section">
+      <button id="aiBtn" class="save-btn ai-btn" disabled>✨ Restyle with AI</button>
+      <div id="aiPanel" class="ai-panel" hidden>
+        <label class="ai-field">Style prompt
+          <input id="aiPrompt" type="text" autocomplete="off" />
+        </label>
+        <label class="ai-field">Relay URL
+          <input id="aiRelay" type="text" autocomplete="off" placeholder="https://your-relay.workers.dev" />
+        </label>
+        <label class="ai-field">Stability API key
+          <input id="aiKey" type="password" autocomplete="off" placeholder="sk-… (optional if stored in the relay)" />
+        </label>
+        <p class="hint-line">One tap = one take with your own key (a few cents each).
+        Your beat’s audio is sent to the AI provider for this feature only.
+        Relay setup takes ~2 minutes: see <code>worker/relay.js</code> in the repo.</p>
+        <div class="ai-actions">
+          <button id="aiGenerate" class="save-btn small">✨ Generate one take</button>
+          <button id="aiClose" class="save-btn small ghost">Close</button>
+        </div>
+      </div>
+      <div id="aiRow" class="ai-actions" hidden>
+        <button id="aiPlayBtn" class="big-btn play small">▶ AI take</button>
+        <button id="aiSaveBtn" class="save-btn small">⬇ Save AI take</button>
+      </div>
+    </section>
+
     <!-- Voice tuning is no longer needed: conversion now analyzes the whole
          clip and clusters your own sounds against each other (no training).
          Kept for a possible future "advanced" mode:
@@ -60,7 +88,7 @@
 
 
     <footer class="footer">
-      <p>Runs entirely in your browser — no audio leaves your device.</p>
+      <p>Runs in your browser — audio never leaves your device, except when you tap ✨ Restyle.</p>
       <p id="versionLine" class="version"></p>
     </footer>
 

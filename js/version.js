@@ -4,4 +4,4 @@
  * release — the footer updating on your phone means the new deploy (and
  * fresh cache) has actually landed.
  */
-export const VERSION = 'v18 · 2026-07-14';
+export const VERSION = 'v19 · 2026-07-14';

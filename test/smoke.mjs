@@ -3,7 +3,8 @@
  *
  * The UI is currently minimal: Record → waveform → Play. Context A uses
  * Chrome's fake microphone (a pulsing tone that genuinely exercises the
- * onset → classify → synth pipeline). Context B force-denies getUserMedia
+ * onset → classify → synth pipeline) and mocks the AI-restyle relay with
+ * route interception (no real network). Context B force-denies getUserMedia
  * and drives hits with precisely-timed keyboard events, covering the
  * mic-less fallback and deterministic tempo detection.
  *
@@ -61,6 +62,21 @@ function serve(rootDir) {
   });
 }
 
+/** A tiny playable WAV (mono PCM16, decaying tone) — the mocked AI response. */
+function makeWav(seconds = 1.2, rate = 8000) {
+  const n = Math.floor(seconds * rate);
+  const buf = Buffer.alloc(44 + n * 2);
+  buf.write('RIFF', 0); buf.writeUInt32LE(36 + n * 2, 4); buf.write('WAVE', 8);
+  buf.write('fmt ', 12); buf.writeUInt32LE(16, 16); buf.writeUInt16LE(1, 20);
+  buf.writeUInt16LE(1, 22); buf.writeUInt32LE(rate, 24); buf.writeUInt32LE(rate * 2, 28);
+  buf.writeUInt16LE(2, 32); buf.writeUInt16LE(16, 34);
+  buf.write('data', 36); buf.writeUInt32LE(n * 2, 40);
+  for (let i = 0; i < n; i++) {
+    buf.writeInt16LE(Math.round(Math.sin((i * 2 * Math.PI * 440) / rate) * 12000 * (1 - i / n)), 44 + i * 2);
+  }
+  return buf;
+}
+
 const { server, port } = await serve(ROOT);
 const base = `http://localhost:${port}`;
 const errors = [];
@@ -108,13 +124,16 @@ try {
   for (const sel of ['#micBtn', '.pad', '#bpmInput', '#debugChk', '#tuneBtn']) {
     check((await pageA.$(sel)) === null, `${sel} should be hidden in the minimal UI`);
   }
-  for (const sel of ['#recBtn', '#origBtn', '#playBtn', '#waveform', '#timeline', '#exportBtn']) {
+  for (const sel of ['#recBtn', '#origBtn', '#playBtn', '#waveform', '#timeline', '#exportBtn', '#aiBtn']) {
     check((await pageA.$(sel)) !== null, `${sel} missing`);
   }
   check((await pageA.$$('.chip[data-kit]')).length === 7, 'expected 7 style chips');
   check(await pageA.$eval('#playBtn', (el) => el.disabled), 'Drums should start disabled');
   check(await pageA.$eval('#origBtn', (el) => el.disabled), 'Original should start disabled');
   check(await pageA.$eval('#exportBtn', (el) => el.disabled), 'Save should start disabled');
+  check(await pageA.$eval('#aiBtn', (el) => el.disabled), 'AI restyle should start disabled');
+  check(await pageA.$eval('#aiPanel', (el) => el.hidden), 'AI panel should start hidden');
+  check(await pageA.$eval('#aiRow', (el) => el.hidden), 'AI take row should start hidden');
   check(await pageA.$eval('#mapWrap', (el) => el.hidden), 'beat map should start hidden');
   const versionText = (await pageA.textContent('#versionLine')).trim();
   check(/v\d+ · \d{4}-\d{2}-\d{2}/.test(versionText), `version line missing/malformed: "${versionText}"`);
@@ -242,13 +261,84 @@ try {
   console.log(`✓ style switched to 808, sample saved: ${download.suggestedFilename()} (${wavBytes.length} bytes)`);
   await pageA.click('.chip[data-kit="real"]');
 
+  step = 'A: AI restyle asks for a relay before generating';
+  check(!(await pageA.$eval('#aiBtn', (el) => el.disabled)), 'AI restyle should be enabled after a take');
+  await pageA.click('#aiBtn');
+  check(!(await pageA.$eval('#aiPanel', (el) => el.hidden)), 'AI panel should open');
+  const promptPrefill = await pageA.$eval('#aiPrompt', (el) => el.value);
+  check(promptPrefill.length > 10, `prompt should be pre-filled, got "${promptPrefill}"`);
+  await pageA.click('#aiGenerate'); // no relay configured yet
+  await waitStatus(pageA, /Add your relay URL first/);
+  console.log('✓ unconfigured AI restyle explains the relay setup');
+
+  step = 'A: AI restyle generates one take (mocked relay)';
+  const AI_ROUTE = '**/v2beta/audio/stable-audio-2/audio-to-audio';
+  const mockTake = makeWav();
+  let aiReq = null;
+  await pageA.route(AI_ROUTE, async (route) => {
+    const req = route.request();
+    if (req.method() === 'OPTIONS') { // CORS preflight (x-api-key is a custom header)
+      await route.fulfill({
+        status: 204,
+        headers: {
+          'Access-Control-Allow-Origin': '*',
+          'Access-Control-Allow-Methods': 'POST, OPTIONS',
+          'Access-Control-Allow-Headers': 'content-type, x-api-key, accept',
+        },
+      });
+      return;
+    }
+    aiReq = { url: req.url(), headers: req.headers(), body: req.postDataBuffer() };
+    await route.fulfill({
+      status: 200,
+      contentType: 'audio/wav',
+      headers: { 'Access-Control-Allow-Origin': '*' },
+      body: mockTake,
+    });
+  });
+  await pageA.fill('#aiRelay', 'https://fake-relay.example');
+  await pageA.fill('#aiKey', 'sk-test');
+  await pageA.click('#aiGenerate');
+  await waitStatus(pageA, /AI take ready/, 30000);
+  check(aiReq, 'no request reached the mocked relay');
+  check(aiReq.url === 'https://fake-relay.example/v2beta/audio/stable-audio-2/audio-to-audio',
+    `wrong endpoint: ${aiReq.url}`);
+  check(aiReq.headers['x-api-key'] === 'sk-test', 'API key header not forwarded');
+  check((aiReq.headers['content-type'] || '').startsWith('multipart/form-data'),
+    `expected multipart body, got ${aiReq.headers['content-type']}`);
+  if (aiReq.body) { // CDP may withhold large post bodies; assert content when available
+    const bodyStr = aiReq.body.toString('latin1');
+    check(bodyStr.includes('name="prompt"'), 'multipart prompt field missing');
+    check(bodyStr.includes('name="audio"') && bodyStr.includes('RIFF'), 'rendered WAV missing from request');
+    check(bodyStr.includes('name="strength"'), 'strength field missing');
+  }
+  check(!(await pageA.$eval('#aiRow', (el) => el.hidden)), 'AI take row should appear');
+  check(await pageA.$eval('#aiPanel', (el) => el.hidden), 'AI panel should close after generating');
+  console.log(`✓ AI request well-formed (endpoint, key, multipart${aiReq.body ? ' + WAV payload' : ''}); take ready`);
+
+  step = 'A: play + save the AI take';
+  await pageA.click('#aiPlayBtn');
+  await waitStatus(pageA, /Playing the AI take/);
+  check((await pageA.textContent('#aiPlayBtn')).includes('Stop'), 'AI play should toggle to Stop');
+  await waitStatus(pageA, /▶ Drums/, 10000); // short mock clip ends, status returns
+  const aiDlPromise = pageA.waitForEvent('download', { timeout: 10000 });
+  await pageA.click('#aiSaveBtn');
+  const aiDl = await aiDlPromise;
+  const aiBytes = await readFile(await aiDl.path());
+  check(aiBytes.length === mockTake.length && aiBytes.subarray(0, 4).toString() === 'RIFF',
+    `saved AI take should be the returned audio (${aiBytes.length} vs ${mockTake.length} bytes)`);
+  check(/^beatbox-ai-.*\.wav$/.test(aiDl.suggestedFilename()), `AI filename: ${aiDl.suggestedFilename()}`);
+  console.log(`✓ AI take plays via media element and saves (${aiDl.suggestedFilename()})`);
+  await pageA.unroute(AI_ROUTE);
+
   step = 'A: record during playback starts a re-take';
   await pageA.click('#recBtn');
   await waitStatus(pageA, /Recording/);
   await pageA.waitForTimeout(1500);
   await pageA.click('#recBtn');
   await waitStatus(pageA, /(▶ Drums|No hits found)/);
-  console.log('✓ playback, and Record-while-playing re-takes cleanly');
+  check(await pageA.$eval('#aiRow', (el) => el.hidden), 'a new recording should invalidate the old AI take');
+  console.log('✓ playback, and Record-while-playing re-takes cleanly (stale AI take cleared)');
 
   step = 'A: playback works on the rebuilt (post-mic) audio context';
   await pageA.waitForTimeout(400); // mic released at +150 ms → context rebuilt
