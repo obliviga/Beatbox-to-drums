@@ -17,9 +17,14 @@ export class Waveform {
     this.maxBars = 0;
   }
 
-  /** Create (once) and return the analyser to connect sources into. */
+  /**
+   * Create (once per context) and return the analyser to connect sources
+   * into. If called with a different context (the app rebuilds its audio
+   * pipeline after mic sessions), a fresh analyser is created for it.
+   */
   attach(ctx) {
-    if (!this.analyser) {
+    if (!this.analyser || this._ctx !== ctx) {
+      this._ctx = ctx;
       this.analyser = ctx.createAnalyser();
       this.analyser.fftSize = 2048;
       this.data = new Float32Array(this.analyser.fftSize);

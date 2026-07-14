@@ -198,6 +198,14 @@ try {
   await pageA.click('#recBtn');
   await waitStatus(pageA, /▶ Drums/);
   console.log('✓ playback, and Record-while-playing re-takes cleanly');
+
+  step = 'A: playback works on the rebuilt (post-mic) audio context';
+  await pageA.waitForTimeout(400); // mic released at +150 ms → context rebuilt
+  await pageA.click('#playBtn');
+  await waitStatus(pageA, /Playing your drums/);
+  await pageA.waitForTimeout(600);
+  await pageA.click('#playBtn');
+  console.log('✓ post-rebuild playback (media-speaker routing) works');
   await ctxA.close();
 
   /* ============ Context B: microphone denied (keyboard-driven hits) ============ */

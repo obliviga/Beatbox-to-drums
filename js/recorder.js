@@ -136,6 +136,19 @@ export class LoopRecorder {
     this.onStateChange(state);
   }
 
+  /**
+   * Swap the audio plumbing (used after a mic session: rebuilding the
+   * AudioContext restores media-speaker routing on phones). Events,
+   * groove, and loop state are plain data and survive untouched.
+   */
+  setAudio(ctx, engine, metronome) {
+    if (this.state !== 'idle') return false;
+    this.ctx = ctx;
+    this.engine = engine;
+    this.metronome = metronome;
+    return true;
+  }
+
   setStyle(level) {
     if (STYLE_LEVELS.includes(level)) this.styleLevel = level;
   }

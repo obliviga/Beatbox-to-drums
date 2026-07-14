@@ -82,6 +82,11 @@ let originalPlaying = false;
 let origSource = null;
 let micReleaseTimer = null;
 let pendingAnalysis = false; // whole-clip analysis runs once the take flushes
+// Using the mic flips phones into call-mode audio routing (the quiet
+// earpiece speaker). We mark the context "tainted" and rebuild it fresh
+// once the mic is released, so playback returns to the media speaker.
+let ctxTainted = false;
+let rebuildingAudio = false;
 
 // Personal voice profile ("Tune to my voice") — on-device k-NN
 const PROFILE_KEY = 'b2d-voice-profile-v1';
@@ -244,6 +249,30 @@ async function startMic() {
 
   applySensitivity();
   micOn = true;
+  ctxTainted = true; // call-mode routing sticks to this context — rebuild later
+}
+
+async function maybeRebuildAudio() {
+  if (!ctx || !ctxTainted || rebuildingAudio) return;
+  if (micOn || micBusy || calibration || originalPlaying) return;
+  if (recorder && recorder.state !== 'idle') return;
+  rebuildingAudio = true;
+  try {
+    const old = ctx;
+    const AC = window.AudioContext || window.webkitAudioContext;
+    ctx = new AC({ latencyHint: 'interactive' });
+    engine = new DrumEngine(ctx);
+    engine.setKit(kitName);
+    if (realKit) engine.registerSampleKit('real', realKit);
+    if (waveform) engine.master.connect(waveform.attach(ctx));
+    metronome = new Metronome(ctx, (when, accent) => engine.click(when, accent));
+    recorder.setAudio(ctx, engine, metronome);
+    workletReady = false; // the worklet module must load into the new context
+    ctxTainted = false;
+    await old.close().catch(() => {});
+  } catch { /* keep whatever context we have if the rebuild fails */ } finally {
+    rebuildingAudio = false;
+  }
 }
 
 function stopMic() {
@@ -415,6 +444,7 @@ function stopMicQuiet() {
 function stopMicSession() {
   stopMicQuiet();
   setStatus('Press Record and beatbox — “B” kick · “Pss” snare · “Ts” hi-hat');
+  maybeRebuildAudio();
 }
 
 if (els.micBtn) {
@@ -582,6 +612,7 @@ function playOriginal() {
       ? `${takeSummary} — ▶ Drums to hear it, ▶ Original for your take`
       : 'Press ● Record and beatbox');
     updateTransportUI();
+    maybeRebuildAudio();
   };
   origSource = src;
   originalPlaying = true;
@@ -672,6 +703,7 @@ function finishCalibration() {
   }
   reflectTuneButton();
   updateTransportUI();
+  maybeRebuildAudio();
 }
 
 function cancelCalibration() {
@@ -680,6 +712,7 @@ function cancelCalibration() {
   setStatus('Tuning cancelled.');
   reflectTuneButton();
   updateTransportUI();
+  maybeRebuildAudio();
 }
 
 if (els.tuneBtn) {
@@ -751,9 +784,11 @@ function onRecorderState(state) {
       if (calibration || !recorder || recorder.state === 'recording' || recorder.state === 'armed') return;
       if (pendingAnalysis || rawChunks.length) finalizeRawTake();
       if (micOn) stopMicQuiet();
+      maybeRebuildAudio();
     }, 150);
   } else if (state === 'idle' && (prevRecorderState === 'recording' || prevRecorderState === 'armed') && micOn) {
     stopMicQuiet();
+    maybeRebuildAudio();
   }
   if (state === 'armed') {
     setStatus('Count-in — recording starts on the next “1”…');
@@ -778,6 +813,7 @@ function onRecorderState(state) {
   updateRecCount();
   updateTransportUI();
   reflectStyleChips();
+  if (state === 'idle') maybeRebuildAudio(); // covers playback ending, too
 }
 
 function showTakeSummary() {
