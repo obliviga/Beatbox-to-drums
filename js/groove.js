@@ -215,6 +215,10 @@ function embellish(clean, { sixteenth, barCount, totalSlots }) {
   const snareVel = median(out.filter((e) => e.type === 'snare').map((e) => e.velocity)) || 0.7;
   const hatVel = median(out.filter((e) => e.type === 'hat').map((e) => e.velocity)) || 0.5;
 
+  // deterministic per-slot velocity wobble so filled hats breathe like a
+  // played pattern instead of a machine
+  const wobble = (slot) => ((((slot + 7) * 2654435761) >>> 16) & 0xff) / 255 - 0.5;
+
   for (let b = 0; b < barCount; b++) {
     const base = b * SLOTS_PER_BAR;
     if (!has('kick', base)) add('kick', base, kickVel * 0.95);
@@ -226,7 +230,8 @@ function embellish(clean, { sixteenth, barCount, totalSlots }) {
       if (slot >= totalSlots) break;
       // leave backbeat slots uncluttered; keep played hats as they are
       if (!has('hat', slot) && !has('snare', slot)) {
-        add('hat', slot, hatVel * (s % 4 === 0 ? 1 : 0.72));
+        const accent = s % 4 === 0 ? 1 : 0.72;
+        add('hat', slot, Math.min(1, hatVel * accent * (1 + 0.14 * wobble(slot))));
       }
     }
   }

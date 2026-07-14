@@ -64,7 +64,9 @@ let micBusy = false;
 let kitName = 'real'; // the sampled acoustic kit is the default sound
 let realKit = null;
 let realKitPromise = null;
-let styleLevel = 'clean';
+// 'full' turns a sparse take into a produced beat (hats on 8ths, backbeat);
+// your literal hits are always available via ▶ Original and the Raw style
+let styleLevel = 'full';
 let sensitivity = 0.65;
 let speakerGuard = false;
 let meterLevel = 0;
@@ -787,6 +789,8 @@ function showTakeSummary() {
   let summary;
   if (recorder.grooveSource === 'auto') {
     summary = `Converted ✓ ${recorder.loopBpm} BPM · ${recorder.bars()}-bar drum loop`;
+    const filled = recorder.playableEvents().length - recorder.events.length;
+    if (recorder.styleLevel === 'full' && filled > 0) summary += ` · groove +${filled}`;
     if (els.bpmInput) {
       els.bpmInput.value = String(recorder.loopBpm);
       saveSettings();

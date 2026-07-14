@@ -156,6 +156,39 @@ try {
   check(sampleCount >= 15, `only ${sampleCount} sample fetches observed`);
   console.log(`✓ real sampled kit loaded (${sampleCount} sample files fetched)`);
 
+  step = 'A: production-chain render fidelity';
+  const metrics = await pageA.evaluate(async () => {
+    const { renderLoopWav } = await import('./js/recorder.js');
+    const { loadRealKit } = await import('./js/sample-kit.js');
+    const ac = new (window.AudioContext || window.webkitAudioContext)();
+    const kit = await loadRealKit(ac, 'samples/real/');
+    const types = ['kick', 'hat', 'snare', 'hat'];
+    const events = Array.from({ length: 8 }, (_, i) => ({ t: i * 0.25, type: types[i % 4], velocity: 0.9 }));
+    const wav = await renderLoopWav({ events, loopDur: 2, kit: 'real', sampleKit: kit, seamless: true });
+    await ac.close();
+    const dv = new DataView(wav);
+    const frames = (wav.byteLength - 44) / 4;
+    let peak = 0;
+    let diff = 0;
+    let energy = 0;
+    for (let i = 0; i < frames; i++) {
+      const l = dv.getInt16(44 + i * 4, true) / 32768;
+      const r = dv.getInt16(46 + i * 4, true) / 32768;
+      const al = Math.abs(l);
+      const ar = Math.abs(r);
+      if (al > peak) peak = al;
+      if (ar > peak) peak = ar;
+      diff += Math.abs(l - r);
+      energy += l * l + r * r;
+    }
+    return { frames, peak, meanDiff: diff / frames, rms: Math.sqrt(energy / (2 * frames)) };
+  });
+  check(metrics.frames === 2 * 44100, `wrong render length: ${metrics.frames}`);
+  check(metrics.peak <= 1.0, `clipping: peak ${metrics.peak}`);
+  check(metrics.peak > 0.15 && metrics.rms > 0.02, `render too quiet: peak ${metrics.peak}, rms ${metrics.rms}`);
+  check(metrics.meanDiff > 0.0005, `no stereo image: meanDiff ${metrics.meanDiff}`);
+  console.log(`✓ produced render: peak ${metrics.peak.toFixed(2)}, rms ${metrics.rms.toFixed(3)}, stereo ✓, no clipping`);
+
   step = 'A: record during playback starts a re-take';
   await pageA.click('#recBtn');
   await waitStatus(pageA, /Recording — beatbox now/);

@@ -22,6 +22,10 @@ export const KIT_NAMES = ['real', 'acoustic', 'tr808', 'trap', 'electro', 'lofi'
 // Subtle stereo placement per instrument, like sitting at a kit
 const PAN = { kick: 0, snare: -0.08, hat: 0.14 };
 
+// How much of each drum feeds the shared room reverb — the "recorded
+// together in one room" glue. Kick stays tight, snare blooms most.
+const REVERB_SEND = { kick: 0.07, snare: 0.22, hat: 0.1 };
+
 export class DrumEngine {
   constructor(ctx) {
     this.ctx = ctx;
@@ -30,16 +34,57 @@ export class DrumEngine {
     this.sampleKits = {};   // name → {kick|snare|hat: {boundaries, buffers}}
     this._rrPhase = { kick: 0, snare: 0, hat: 0 }; // humanization counter
 
+    /*
+     * Production chain — what turns triggered one-shots into a mixed,
+     * produced-sounding beat:
+     *
+     *   voices → master ─┬─ dry ────────────────┐
+     *                    └─ squash (heavy comp) ─┤→ bus → saturation → limiter → out
+     *   voices → per-drum sends → room reverb ───┘
+     *
+     * Parallel ("New York") compression adds density without killing
+     * transients; a generated-impulse room glues the drums into one
+     * space; gentle tanh saturation and a limiter finish the bus.
+     */
     this.master = ctx.createGain();
     this.master.gain.value = 0.9;
-    const comp = ctx.createDynamicsCompressor();
-    comp.threshold.value = -14;
-    comp.knee.value = 18;
-    comp.ratio.value = 5;
-    comp.attack.value = 0.002;
-    comp.release.value = 0.15;
-    this.master.connect(comp);
-    comp.connect(ctx.destination);
+
+    const dry = ctx.createGain();
+    dry.gain.value = 1;
+
+    const squash = ctx.createDynamicsCompressor();
+    squash.threshold.value = -32;
+    squash.knee.value = 6;
+    squash.ratio.value = 12;
+    squash.attack.value = 0.003;
+    squash.release.value = 0.25;
+    const squashGain = ctx.createGain();
+    squashGain.gain.value = 0.4;
+
+    this._convolver = ctx.createConvolver();
+    this._convolver.buffer = makeRoomIR(ctx);
+    const revReturn = ctx.createGain();
+    revReturn.gain.value = 0.3;
+
+    const bus = ctx.createGain();
+    const saturation = makeDrive(ctx, 1.15); // barely-there glue drive
+    const limiter = ctx.createDynamicsCompressor();
+    limiter.threshold.value = -4;
+    limiter.knee.value = 2;
+    limiter.ratio.value = 20;
+    limiter.attack.value = 0.001;
+    limiter.release.value = 0.1;
+
+    this.master.connect(dry);
+    this.master.connect(squash);
+    squash.connect(squashGain);
+    this._convolver.connect(revReturn);
+    dry.connect(bus);
+    squashGain.connect(bus);
+    revReturn.connect(bus);
+    bus.connect(saturation);
+    saturation.connect(limiter);
+    limiter.connect(ctx.destination);
 
     this.noiseBuf = makeNoiseBuffer(ctx);
   }
@@ -115,16 +160,48 @@ export class DrumEngine {
   }
 
   _outputFor(type) {
-    if (!this.ctx.createStereoPanner) return this.master;
-    const pan = this.ctx.createStereoPanner();
-    // tiny per-hit jitter keeps repeated hits from sounding machine-identical
-    pan.pan.value = (PAN[type] || 0) + (Math.random() * 2 - 1) * 0.04;
-    pan.connect(this.master);
-    return pan;
+    let out;
+    if (this.ctx.createStereoPanner) {
+      out = this.ctx.createStereoPanner();
+      // tiny per-hit jitter keeps repeated hits from sounding machine-identical
+      out.pan.value = (PAN[type] || 0) + (Math.random() * 2 - 1) * 0.04;
+    } else {
+      out = this.ctx.createGain();
+    }
+    out.connect(this.master);
+    const send = this.ctx.createGain();
+    send.gain.value = REVERB_SEND[type] ?? 0.1;
+    out.connect(send);
+    send.connect(this._convolver);
+    return out;
   }
 }
 
 /* ---------- shared helpers ---------- */
+
+/**
+ * Generated room impulse response: decorrelated exponentially-decaying
+ * noise per channel with softened highs — a believable small drum room
+ * with zero asset bytes. ConvolverNode's built-in normalization keeps
+ * the wet level consistent across sample rates.
+ */
+function makeRoomIR(ctx, seconds = 0.5) {
+  const rate = ctx.sampleRate;
+  const len = Math.ceil(seconds * rate);
+  const buf = ctx.createBuffer(2, len, rate);
+  for (let ch = 0; ch < 2; ch++) {
+    const data = buf.getChannelData(ch);
+    let lp = 0;
+    for (let i = 0; i < len; i++) {
+      const t = i / rate;
+      // one-pole lowpass on the noise darkens the tail like real walls do
+      const smooth = 0.55 + 0.35 * (i / len);
+      lp = lp * smooth + (Math.random() * 2 - 1) * (1 - smooth);
+      data[i] = lp * Math.exp(-t * 9);
+    }
+  }
+  return buf;
+}
 
 function makeNoiseBuffer(ctx) {
   const buf = ctx.createBuffer(1, ctx.sampleRate, ctx.sampleRate);
