@@ -153,6 +153,8 @@ export function buildGroove(events, grid, { anchor = 'auto', bars = null } = {})
     type: e.type,
     velocity: e.velocity,
     duration: e.duration,
+    ambience: e.ambience,
+    roll: e.roll,
     slot: Math.round((e.t - anchorT - offset) / sixteenth),
   }));
 
@@ -190,15 +192,18 @@ export function buildGroove(events, grid, { anchor = 'auto', bars = null } = {})
       type: e.type,
       velocity: e.velocity,
       duration: e.duration,
+      ambience: e.ambience,
+      roll: e.roll,
     }))
     .sort(byT);
 
   // faithful: the performance exactly as played — original micro-timing,
-  // dynamics, and open hats — with only accidental double-triggers merged
+  // dynamics, open hats, rolls — with only double-triggers merged
+  // (roll strokes are intentionally rapid; they're never deduped)
   const faithful = [];
   for (const e of raw) {
     const prev = faithful[faithful.length - 1];
-    if (prev && prev.type === e.type && e.t - prev.t < 0.06) {
+    if (prev && !prev.roll && !e.roll && prev.type === e.type && e.t - prev.t < 0.035) {
       if (e.velocity > prev.velocity) faithful[faithful.length - 1] = { ...e };
     } else {
       faithful.push({ ...e });

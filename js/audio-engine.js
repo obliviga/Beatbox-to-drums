@@ -113,12 +113,12 @@ export class DrumEngine {
    * can cancel them (used by the loop recorder's playback).
    * @param {'kick'|'snare'|'hat'} type
    */
-  trigger(type, { when = this.ctx.currentTime, velocity = 1, track = false } = {}) {
+  trigger(type, { when = this.ctx.currentTime, velocity = 1, ambience = 0, track = false } = {}) {
     const v = Math.min(1, Math.max(0.05, velocity));
     const sampleKit = this.sampleKits[this.kit];
     let sources;
     if (sampleKit && sampleKit[type]) {
-      sources = this._playSample(sampleKit[type], type, when, v);
+      sources = this._playSample(sampleKit[type], type, when, v, ambience);
     } else {
       // synth voice — also the fallback while the 'real' kit is loading;
       // synth kits cover the extended palette with their nearest voices
@@ -135,7 +135,7 @@ export class DrumEngine {
     }
   }
 
-  _playSample(drum, type, when, v) {
+  _playSample(drum, type, when, v, ambience = 0) {
     const src = this.ctx.createBufferSource();
     src.buffer = drum.buffers[Math.min(layerIndex(drum.boundaries, v), drum.buffers.length - 1)];
     // Humanize: alternate tiny detunes so fast rolls never repeat a
@@ -145,7 +145,7 @@ export class DrumEngine {
     const gain = this.ctx.createGain();
     // layers carry the timbre; a gentle gain slope smooths steps between them
     gain.gain.value = 0.7 + 0.3 * v;
-    src.connect(gain).connect(this._outputFor(type));
+    src.connect(gain).connect(this._outputFor(type, ambience));
     src.start(when);
 
     // Hi-hat choke: striking (or re-striking) the hats silences a still-
@@ -182,7 +182,7 @@ export class DrumEngine {
     this.scheduled.clear();
   }
 
-  _outputFor(type) {
+  _outputFor(type, ambience = 0) {
     let out;
     if (this.ctx.createStereoPanner) {
       out = this.ctx.createStereoPanner();
@@ -193,7 +193,9 @@ export class DrumEngine {
     }
     out.connect(this.master);
     const send = this.ctx.createGain();
-    send.gain.value = REVERB_SEND[type] ?? 0.1;
+    // performed ambience (a breathy tail on the original hit) opens up the
+    // room for exactly that hit
+    send.gain.value = (REVERB_SEND[type] ?? 0.1) + Math.min(1, Math.max(0, ambience)) * 0.4;
     out.connect(send);
     send.connect(this._convolver);
     return out;

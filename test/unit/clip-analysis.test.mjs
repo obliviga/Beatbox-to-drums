@@ -314,13 +314,67 @@ test('REGRESSION: a phone-mic-style take must NOT collapse into all hats', () =>
   events.forEach((e, i) => assert.equal(e.type, expected[i], `hit ${i}: ${e.type} ≠ ${expected[i]}`));
 });
 
-test('detectOnsets enforces minimum separation', () => {
+test('detectOnsets separates fast hits but merges sub-30ms double-triggers', () => {
   const r = (s) => mulberry32(s);
-  // two hits 50 ms apart → closer than the 90 ms minimum → one onset
-  const clip = buildClip([[0.5, kickSig(r(61))], [0.55, kickSig(r(62))], [1.2, kickSig(r(63))]]);
-  const onsets = detectOnsets(clip, SR);
-  assert.equal(onsets.length, 2);
+  const clip = buildClip([[0.5, kickSig(r(61))], [0.53, kickSig(r(62))], [1.2, kickSig(r(63))]]);
+  assert.equal(detectOnsets(clip, SR).length, 2, '30 ms apart = one hit');
+  const fast = buildClip([[0.5, kickSig(r(64))], [0.555, kickSig(r(65))], [1.2, kickSig(r(66))]]);
+  assert.equal(detectOnsets(fast, SR).length, 3, '55 ms apart = two distinct hits');
 });
+
+test('triplets and fast runs are captured hit-for-hit', () => {
+  const r = (s) => mulberry32(s);
+  // 16th-note triplets at 120 BPM: 83 ms apart — previously inaudible
+  const placed = [
+    [0.5, kickSig(r(301))],
+    [0.9, snareSig(r(302))], [0.983, snareSig(r(303))], [1.066, snareSig(r(304))],
+    [1.5, kickSig(r(305))],
+    [1.9, snareSig(r(306))], [1.983, snareSig(r(307))], [2.066, snareSig(r(308))],
+  ];
+  const { events } = analyzeClip(buildClip(placed, 4), SR);
+  assert.equal(events.length, 8, `all 8 hits incl. triplets, got ${events.length}`);
+  const expected = ['kick', 'snare', 'snare', 'snare', 'kick', 'snare', 'snare', 'snare'];
+  events.forEach((e, i) => assert.equal(e.type, expected[i], `hit ${i}: ${e.type}`));
+});
+
+test('a sustained snare-family sound becomes a buzz/press roll', () => {
+  const r = (s) => mulberry32(s);
+  // near-flat noise burst, 0.3 s — a marching "trrrr"
+  const rollSig = (rand) => bandSig(rand, 500, 3200, 150, 1.2, 14400);
+  const placed = [
+    [0.5, kickSig(r(311))], [1.0, snareSig(r(312))],
+    [1.5, rollSig(r(313))], [2.2, kickSig(r(314))], [2.7, snareSig(r(315))],
+  ];
+  const { events } = analyzeClip(buildClip(placed, 4.5), SR);
+  const strokes = events.filter((e) => e.roll);
+  assert.ok(strokes.length >= 6, `roll should expand into strokes, got ${strokes.length}`);
+  assert.ok(strokes.every((e) => e.type === 'snare'), 'roll strokes are snare re-strikes');
+  for (let i = 1; i < strokes.length; i++) {
+    const dt = strokes[i].t - strokes[i - 1].t;
+    assert.ok(dt > 0.02 && dt < 0.045, `stroke spacing ${dt}`);
+  }
+  // taper: later strokes are softer on average than the first
+  assert.ok(strokes[strokes.length - 1].velocity < strokes[0].velocity, 'roll tapers');
+  // the surrounding discrete hits survive untouched
+  assert.equal(events.filter((e) => e.type === 'kick').length, 2);
+});
+
+test('a long decaying tail becomes performed ambience, not a roll', () => {
+  const r = (s) => mulberry32(s);
+  const verbSnare = (rand) => bandSig(rand, 500, 3200, 150, 5.5, 22000); // ~0.4 s decaying tail
+  const placed = [
+    [0.5, kickSig(r(321))], [1.0, verbSnare(r(322))],
+    [1.8, kickSig(r(323))], [2.3, snareSig(r(324))],
+  ];
+  const { events } = analyzeClip(buildClip(placed, 4), SR);
+  assert.equal(events.length, 4, 'no roll expansion for a decaying tail');
+  const wet = events[1];
+  const dry = events[3];
+  assert.ok((wet.ambience || 0) > 0.15, `tailed hit should carry ambience: ${wet.ambience}`);
+  assert.ok((dry.ambience || 0) < 0.05, `short hit should stay dry: ${dry.ambience}`);
+});
+
+
 
 test('kmeans is deterministic and separates obvious clusters', () => {
   const pts = [

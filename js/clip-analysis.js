@@ -29,7 +29,7 @@ const FRAME = 128;               // envelope hop (~2.7 ms @ 48 kHz)
 // reveals itself once its body develops. Offline analysis can afford this.
 const BODY_SAMPLES = 2048;
 const LOW_WINDOW_SEC = 0.08;     // bass-ratio measurement window (80 ms)
-const MIN_SEP_SEC = 0.09;        // two hits can't be closer than this
+const MIN_SEP_SEC = 0.048;       // supports fast playing: triplet 16ths, rolls
 const PEAK_WINDOW_SEC = 0.06;    // where a hit's peak/energy (velocity) is measured
 // Open-hat rules (context-aware): a hat is open if it rings a while in
 // absolute terms, OR if it's still ringing when the next hit arrives —
@@ -65,6 +65,16 @@ const MIN_SILHOUETTE = 0.3; // below this, the take is one repeated sound
 
 const CRASH_SEC = 0.45; // hat-family hits ringing this long are crashes
 
+// Sustained-sound performance gestures (marching-band vocabulary):
+// a snare-family hit whose envelope stays UP is a buzz/press roll —
+// rendered as rapid tapered re-strikes; a hit with a long DECAYING tail
+// is performed ambience — rendered as extra room reverb on that hit.
+const ROLL_MIN_SEC = 0.2;        // sustained at least this long…
+const ROLL_SUSTAIN = 0.45;       // …with mean envelope ≥ 45% of its peak
+const ROLL_STROKE_SEC = 0.031;   // press-roll re-strike spacing
+const AMBIENCE_MIN_SEC = 0.22;   // decaying tails longer than this add room
+const AMBIENCE_FULL_SEC = 0.6;   // tail length for maximum extra room
+
 /**
  * @param {Float32Array} samples — the whole take, mono
  * @param {number} sampleRate
@@ -91,6 +101,7 @@ export function analyzeClip(samples, sampleRate) {
       peak: onset.peak,
       rms: onset.rms,
       duration: onset.duration,
+      sustain: onset.sustain,
       features,
       low80: lowFeats.ratio,
       lowZcr: lowFeats.zcr,
@@ -99,11 +110,13 @@ export function analyzeClip(samples, sampleRate) {
   if (!hits.length) return { events: [], sounds: 0 };
 
   const { labels, sounds } = labelHits(hits);
-  const events = hits.map((h, i) => {
+  const events = [];
+  hits.forEach((h, i) => {
     // Dynamics relative to the take itself, from both peak (attack snap)
     // and energy (body): ghost notes come out genuinely quiet, accents
     // genuinely loud, instead of everything landing mid-strength.
     const loud = 0.55 * (h.peak / clipPeak) + 0.45 * Math.sqrt(h.rms / clipRms);
+    const velocity = Math.min(1, Math.max(0.1, 0.1 + 0.9 * loud));
     // Hat-family articulation from ring length: a very long ring is a
     // CRASH; a hit still sounding when the next arrives is an OPEN hat.
     const gap = i + 1 < hits.length ? hits[i + 1].t - h.t : Infinity;
@@ -114,12 +127,36 @@ export function analyzeClip(samples, sampleRate) {
       if (h.duration >= CRASH_SEC) type = 'crash';
       else if (rings) type = 'openhat';
     }
-    return {
-      t: h.t,
-      type,
-      velocity: Math.min(1, Math.max(0.1, 0.1 + 0.9 * loud)),
-      duration: h.duration,
-    };
+
+    // Marching-band buzz/press roll: a sustained (non-decaying) snare-
+    // family sound becomes rapid tapered re-strikes for its whole length.
+    const rollable = type === 'snare' || type === 'tom' || type === 'tomfloor';
+    if (rollable && h.duration >= ROLL_MIN_SEC && (h.sustain || 0) >= ROLL_SUSTAIN) {
+      const strokes = Math.max(4, Math.min(28, Math.round(h.duration / ROLL_STROKE_SEC)));
+      for (let s = 0; s < strokes; s++) {
+        const wob = ((((s + 3) * 2654435761) >>> 16) & 0xff) / 255 - 0.5;
+        const taper = 1 - 0.3 * (s / strokes);
+        events.push({
+          t: h.t + s * ROLL_STROKE_SEC,
+          type,
+          velocity: Math.min(1, Math.max(0.1, velocity * taper * (0.8 + 0.2 * (s % 2)) * (1 + 0.1 * wob))),
+          duration: ROLL_STROKE_SEC,
+          roll: true,
+        });
+      }
+      return;
+    }
+
+    // Performed ambience: a long DECAYING tail on a drum reads as
+    // reverb/echo made with the mouth — give that hit extra room.
+    let ambience = 0;
+    if (type !== 'hat' && type !== 'openhat' && type !== 'crash'
+      && h.duration >= AMBIENCE_MIN_SEC && (h.sustain || 0) < ROLL_SUSTAIN) {
+      ambience = Math.min(1, (h.duration - AMBIENCE_MIN_SEC) / (AMBIENCE_FULL_SEC - AMBIENCE_MIN_SEC));
+      if (type === 'kick') ambience *= 0.5; // keep the low end tight-ish
+    }
+
+    events.push({ t: h.t, type, velocity, duration: h.duration, ambience });
   });
   return { events, sounds };
 }
@@ -178,7 +215,7 @@ export function detectOnsets(samples, sampleRate) {
   const nFrames = Math.floor(samples.length / FRAME);
   if (nFrames < 4) return [];
 
-  const env = new Float32Array(nFrames);
+  const envRaw = new Float32Array(nFrames);
   for (let f = 0; f < nFrames; f++) {
     let sum = 0;
     const base = f * FRAME;
@@ -186,24 +223,42 @@ export function detectOnsets(samples, sampleRate) {
       const v = samples[base + i];
       sum += v * v;
     }
-    env[f] = Math.sqrt(sum / FRAME);
+    envRaw[f] = Math.sqrt(sum / FRAME);
+  }
+  // Smooth with a ~11 ms moving average: a sub-bass waveform (e.g. a 55 Hz
+  // kick) ripples the raw 2.7 ms-frame envelope at twice its frequency,
+  // which would read as phantom onsets now that fast hits are allowed.
+  // 4 frames kills that ripple while 50 ms-apart hits stay separate.
+  const env = new Float32Array(nFrames);
+  for (let f = 0; f < nFrames; f++) {
+    let sum = 0;
+    let count = 0;
+    for (let g = Math.max(0, f - 3); g <= f; g++) {
+      sum += envRaw[g];
+      count++;
+    }
+    env[f] = sum / count;
   }
 
-  // novelty = rectified energy rise vs the recent past
+  // novelty = rectified energy rise vs the pre-rise baseline. The
+  // reference sits beyond the smoothing window so a hit's full step
+  // registers even though the smoothed envelope ramps over ~4 frames.
   const nov = new Float32Array(nFrames);
   let peakEnv = 0;
-  for (let f = 2; f < nFrames; f++) {
-    const past = Math.max(env[f - 1], env[f - 2]);
+  for (let f = 4; f < nFrames; f++) {
+    const past = Math.max(env[f - 3], env[f - 4]);
     nov[f] = Math.max(0, env[f] - past);
     if (env[f] > peakEnv) peakEnv = env[f];
   }
   if (peakEnv < 1e-4) return []; // effectively silence
 
   // thresholds from the clip's own statistics
-  const positives = [];
-  for (let f = 0; f < nFrames; f++) if (nov[f] > 0) positives.push(nov[f]);
-  positives.sort((a, b) => a - b);
-  const medianNov = positives.length ? positives[Math.floor(positives.length / 2)] : 0;
+  // The novelty noise floor is the median over ALL frames (zeros
+  // included): on a clean recording novelty is exactly 0 between hits,
+  // and a median of only the positive values would be the hits
+  // themselves — tripling that would gate everything out.
+  const allNov = Array.from(nov.subarray(4)).sort((a, b) => a - b);
+  const medianNov = allNov.length ? allNov[Math.floor(allNov.length / 2)] : 0;
   // slightly hair-triggered so ghost notes make it into the beat — the
   // clustering downstream is tolerant of the occasional soft extra
   const novThr = Math.max(medianNov * 3, peakEnv * 0.04);
@@ -218,7 +273,7 @@ export function detectOnsets(samples, sampleRate) {
     if (nov[f] < nov[f - 1] || (f + 1 < nFrames && nov[f] < nov[f + 1])) continue;
     if (env[f] < envThr && (f + 1 >= nFrames || env[f + 1] < envThr)) continue;
 
-    const index = Math.max(0, (f - 1) * FRAME);
+    const index = Math.max(0, (f - 2) * FRAME); // MA smoothing lags ~1 frame
     let peak = 0;
     let energy = 0;
     const end = Math.min(index + peakWin, samples.length);
@@ -253,6 +308,12 @@ export function detectOnsets(samples, sampleRate) {
     let f = startF;
     while (f < endF && env[f] >= floor) f++;
     onsets[i].duration = ((f - startF) * FRAME) / sampleRate;
+
+    // envelope SHAPE over that span: a plateau (~1) is a sustained sound
+    // (buzz roll); an exponential decay (~0.2–0.35) is a ringing tail
+    let sum = 0;
+    for (let g = startF; g < f; g++) sum += env[g];
+    onsets[i].sustain = f > startF && hitPeakEnv > 0 ? sum / (f - startF) / hitPeakEnv : 0;
   }
   return onsets;
 }

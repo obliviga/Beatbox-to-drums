@@ -73,7 +73,7 @@ export async function renderLoopWav({ events, loopDur, kit, sampleKit = null, se
   if (sampleKit) engine.registerSampleKit(kit, sampleKit); // AudioBuffers are context-independent
   engine.setKit(kit);
   for (const e of events) {
-    engine.trigger(e.type, { when: lead + e.t, velocity: e.velocity });
+    engine.trigger(e.type, { when: lead + e.t, velocity: e.velocity, ambience: e.ambience || 0 });
   }
   const rendered = await ctx.startRendering();
 
@@ -287,7 +287,7 @@ export class LoopRecorder {
     const t0 = this.ctx.currentTime + 0.12;
     this._playT0 = t0;
     for (const e of this.playableEvents()) {
-      this.engine.trigger(e.type, { when: t0 + e.t, velocity: e.velocity, track: true });
+      this.engine.trigger(e.type, { when: t0 + e.t, velocity: e.velocity, ambience: e.ambience || 0, track: true });
       this._timers.push(setTimeout(
         () => this.onHit(e.type),
         Math.max(0, (t0 + e.t - this.ctx.currentTime) * 1000),

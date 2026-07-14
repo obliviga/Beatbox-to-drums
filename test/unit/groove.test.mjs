@@ -118,14 +118,27 @@ test('faithful preserves the performance exactly: timing, order, no additions', 
 
 test('faithful merges only accidental double-triggers', () => {
   const events = [
-    ev(0.4, 'kick', 0.7), ev(0.43, 'kick', 0.95), // 30 ms double-trigger
-    ev(0.8, 'hat', 0.6), ev(0.88, 'hat', 0.6),    // 80 ms apart — a real roll, keep both
+    ev(0.4, 'kick', 0.7), ev(0.42, 'kick', 0.95), // 20 ms double-trigger
+    ev(0.8, 'hat', 0.6), ev(0.85, 'hat', 0.6),    // 50 ms apart — fast playing, keep both
   ];
   const grid = detectGrid(events, { bpm: 100 });
   const faithful = buildGroove(events, grid).styles.faithful;
   assert.equal(faithful.filter((e) => e.type === 'kick').length, 1);
   assert.equal(faithful.find((e) => e.type === 'kick').velocity, 0.95, 'louder double kept');
-  assert.equal(faithful.filter((e) => e.type === 'hat').length, 2, 'a real roll survives');
+  assert.equal(faithful.filter((e) => e.type === 'hat').length, 2, 'fast playing survives');
+});
+
+test('faithful never dedupes roll strokes', () => {
+  const events = [
+    ev(0.4, 'kick', 0.9),
+    { ...ev(0.8, 'snare', 0.8), roll: true },
+    { ...ev(0.831, 'snare', 0.75), roll: true },
+    { ...ev(0.862, 'snare', 0.7), roll: true },
+    { ...ev(0.893, 'snare', 0.72), roll: true },
+  ];
+  const grid = detectGrid(events, { bpm: 100 });
+  const faithful = buildGroove(events, grid).styles.faithful;
+  assert.equal(faithful.filter((e) => e.type === 'snare').length, 4, 'all roll strokes kept');
 });
 
 test('a pickup hit before the first kick wraps to the loop end', () => {
