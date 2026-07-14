@@ -31,7 +31,13 @@ const BODY_SAMPLES = 2048;
 const LOW_WINDOW_SEC = 0.08;     // bass-ratio measurement window (80 ms)
 const MIN_SEP_SEC = 0.09;        // two hits can't be closer than this
 const PEAK_WINDOW_SEC = 0.06;    // where a hit's peak/energy (velocity) is measured
-const OPEN_HAT_SEC = 0.18;       // hat-cluster hits ringing at least this long are open hats
+// Open-hat rules (context-aware): a hat is open if it rings a while in
+// absolute terms, OR if it's still ringing when the next hit arrives —
+// in a busy beat the next hit always cuts the measurement short, so the
+// ratio is the signal, not the absolute length.
+const OPEN_HAT_SEC = 0.15;
+const OPEN_HAT_GAP_FRAC = 0.45;  // ringing through 45%+ of the gap to the next hit
+const OPEN_HAT_MIN_GAP = 0.18;   // …but never for rapid closed-hat runs
 const LABEL_ORDER = ['kick', 'snare', 'hat']; // dark → bright
 
 // Fixed per-feature scale for SEMANTIC distances (are two clusters the
@@ -79,9 +85,12 @@ export function analyzeClip(samples, sampleRate) {
     // and energy (body): ghost notes come out genuinely quiet, accents
     // genuinely loud, instead of everything landing mid-strength.
     const loud = 0.55 * (h.peak / clipPeak) + 0.45 * Math.sqrt(h.rms / clipRms);
-    // A long, ringing hit in the hat family is an OPEN hat — duration is
-    // part of the performance too.
-    const type = labels[i] === 'hat' && h.duration >= OPEN_HAT_SEC ? 'openhat' : labels[i];
+    // A ringing hit in the hat family is an OPEN hat — either long in
+    // absolute terms, or still sounding when the next hit arrives.
+    const gap = i + 1 < hits.length ? hits[i + 1].t - h.t : Infinity;
+    const rings = h.duration >= OPEN_HAT_SEC
+      || (gap >= OPEN_HAT_MIN_GAP && h.duration >= OPEN_HAT_GAP_FRAC * Math.min(gap, 0.5));
+    const type = labels[i] === 'hat' && rings ? 'openhat' : labels[i];
     return {
       t: h.t,
       type,
@@ -187,7 +196,9 @@ export function detectOnsets(samples, sampleRate) {
     for (let f = startF; f < Math.min(startF + 6, endF); f++) {
       if (env[f] > hitPeakEnv) hitPeakEnv = env[f];
     }
-    const floor = Math.max(envThr * 0.7, hitPeakEnv * 0.16);
+    // breathy open-hat tails are quiet — use a low floor so audible
+    // sustain still counts as ringing
+    const floor = Math.max(envThr * 0.7, hitPeakEnv * 0.1);
     let f = startF;
     while (f < endF && env[f] >= floor) f++;
     onsets[i].duration = ((f - startF) * FRAME) / sampleRate;

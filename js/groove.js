@@ -20,7 +20,7 @@
  * Pure functions, no Web Audio — unit-testable in Node.
  */
 
-export const STYLE_LEVELS = ['raw', 'tight', 'clean', 'full'];
+export const STYLE_LEVELS = ['raw', 'faithful', 'tight', 'clean', 'full'];
 export const SLOTS_PER_BAR = 16; // 1/16 notes in 4/4
 
 // Gate thresholds tuned by Monte-Carlo simulation (400 trials/scenario):
@@ -152,21 +152,30 @@ export function buildGroove(events, grid, { anchor = 'auto', bars = null } = {})
     t: e.t,
     type: e.type,
     velocity: e.velocity,
+    duration: e.duration,
     slot: Math.round((e.t - anchorT - offset) / sixteenth),
   }));
 
+  // Grid styles anchor bar 1 on the first kick (musical bar phase);
+  // raw/faithful anchor on the FIRST HIT so the performance's order can
+  // never be scrambled by a pickup wrapping to the loop end.
   let anchorSlot = 0;
-  let anchorRawT = anchorT + offset;
   if (anchor === 'auto') {
     const a = slotted.find((e) => e.type === 'kick') || slotted[0];
     anchorSlot = a.slot;
-    anchorRawT = a.t;
   }
   for (const e of slotted) e.slot -= anchorSlot;
+  const firstRawT = anchor === 'none' ? 0 : Math.min(...slotted.map((e) => e.t));
 
   const posSlots = slotted.filter((e) => e.slot >= 0).map((e) => e.slot);
   const maxSlot = posSlots.length ? Math.max(...posSlots) : 0;
-  const barCount = bars || Math.max(1, Math.ceil((maxSlot + 1) / SLOTS_PER_BAR));
+  const rawSpan = Math.max(...slotted.map((e) => e.t)) - firstRawT;
+  const barDur = SLOTS_PER_BAR * sixteenth;
+  const barCount = bars || Math.max(
+    1,
+    Math.ceil((maxSlot + 1) / SLOTS_PER_BAR),
+    Math.ceil((rawSpan + sixteenth) / barDur),
+  );
   const totalSlots = barCount * SLOTS_PER_BAR;
   const loopDur = totalSlots * sixteenth;
 
@@ -177,11 +186,24 @@ export function buildGroove(events, grid, { anchor = 'auto', bars = null } = {})
 
   const raw = slotted
     .map((e) => ({
-      t: (((e.t - anchorRawT) % loopDur) + loopDur) % loopDur,
+      t: (((e.t - firstRawT) % loopDur) + loopDur) % loopDur,
       type: e.type,
       velocity: e.velocity,
+      duration: e.duration,
     }))
     .sort(byT);
+
+  // faithful: the performance exactly as played — original micro-timing,
+  // dynamics, and open hats — with only accidental double-triggers merged
+  const faithful = [];
+  for (const e of raw) {
+    const prev = faithful[faithful.length - 1];
+    if (prev && prev.type === e.type && e.t - prev.t < 0.06) {
+      if (e.velocity > prev.velocity) faithful[faithful.length - 1] = { ...e };
+    } else {
+      faithful.push({ ...e });
+    }
+  }
 
   const tight = slotted
     .map((e) => ({ t: e.slot * sixteenth, slot: e.slot, type: e.type, velocity: e.velocity }))
@@ -198,7 +220,7 @@ export function buildGroove(events, grid, { anchor = 'auto', bars = null } = {})
 
   const full = embellish(clean, { sixteenth, barCount, totalSlots }).sort(byT);
 
-  return { bpm, sixteenth, loopDur, bars: barCount, styles: { raw, tight, clean, full } };
+  return { bpm, sixteenth, loopDur, bars: barCount, styles: { raw, faithful, tight, clean, full } };
 }
 
 /** clean + generated kicks on 1, backbeat snares on 2 & 4, hats on 8ths. */

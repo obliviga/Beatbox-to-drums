@@ -90,6 +90,44 @@ test('grooves snap, anchor on the first kick, and lock to whole bars', () => {
     'raw should keep human timing');
 });
 
+test('faithful preserves the performance exactly: timing, order, no additions', () => {
+  const events = [
+    ev(0.31, 'hat', 0.6),          // pickup BEFORE the first kick
+    ev(0.4, 'kick', 1),
+    ev(0.663, 'snare', 0.8),       // deliberately off-grid (swing)
+    ev(0.91, 'openhat', 0.7),
+    ev(1.15, 'kick', 0.9),
+  ];
+  const grid = detectGrid(events, { bpm: 100 });
+  const groove = buildGroove(events, grid);
+  const faithful = groove.styles.faithful;
+
+  assert.equal(faithful.length, events.length, 'nothing added or removed');
+  // anchored on the FIRST HIT — the pickup stays first, nothing wraps
+  assert.equal(faithful[0].type, 'hat');
+  assert.ok(Math.abs(faithful[0].t) < 1e-9);
+  // exact micro-timing offsets survive
+  for (let i = 1; i < events.length; i++) {
+    assert.ok(Math.abs(faithful[i].t - (events[i].t - events[0].t)) < 1e-9, `hit ${i} moved`);
+    assert.equal(faithful[i].type, events[i].type, `hit ${i} type changed`);
+  }
+  // and the loop is long enough to hold the whole take
+  const last = faithful[faithful.length - 1];
+  assert.ok(groove.loopDur >= last.t, 'loop must cover the performance');
+});
+
+test('faithful merges only accidental double-triggers', () => {
+  const events = [
+    ev(0.4, 'kick', 0.7), ev(0.43, 'kick', 0.95), // 30 ms double-trigger
+    ev(0.8, 'hat', 0.6), ev(0.88, 'hat', 0.6),    // 80 ms apart — a real roll, keep both
+  ];
+  const grid = detectGrid(events, { bpm: 100 });
+  const faithful = buildGroove(events, grid).styles.faithful;
+  assert.equal(faithful.filter((e) => e.type === 'kick').length, 1);
+  assert.equal(faithful.find((e) => e.type === 'kick').velocity, 0.95, 'louder double kept');
+  assert.equal(faithful.filter((e) => e.type === 'hat').length, 2, 'a real roll survives');
+});
+
 test('a pickup hit before the first kick wraps to the loop end', () => {
   // hat pickup 0.25 s before the kick pattern starts
   const events = [ev(0.15, 'hat', 0.6), ...pattern(0.25, 12, { start: 0.4 })];

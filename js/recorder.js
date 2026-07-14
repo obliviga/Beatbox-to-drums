@@ -116,7 +116,7 @@ export class LoopRecorder {
     this.events = []; // the raw take, timestamps relative to recording start
     this.bpm = 90;
     this.metronomeOn = false;
-    this.styleLevel = 'clean';
+    this.styleLevel = 'faithful';
 
     /** Groove of the current loop, or null (no loop / detection failed). */
     this.groove = null;

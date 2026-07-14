@@ -149,6 +149,21 @@ test('long ringing hat-family hits become OPEN hats; short ones stay closed', ()
   assert.ok(events.every((e, i) => i % 4 !== 0 || e.type === 'kick'));
 });
 
+test('in a busy beat, a hat still ringing at the next hit is OPEN (ratio rule)', () => {
+  const r = (s) => mulberry32(s);
+  // gap 0.24 s; the "openish" hat rings ~0.12 s measured (below the
+  // absolute 0.15 s rule) but through ~50% of the gap — context says open
+  const openishHat = (rand) => bandSig(rand, 5500, 12000, 320, 14, 12000);
+  const placed = seq([
+    kickSig(r(101)), hatSig(r(102)), openishHat(r(103)), hatSig(r(104)),
+    kickSig(r(105)), hatSig(r(106)), openishHat(r(107)), hatSig(r(108)),
+  ], 0.24);
+  const { events } = analyzeClip(buildClip(placed, 4), SR);
+  assert.equal(events.length, 8);
+  const expected = ['kick', 'hat', 'openhat', 'hat', 'kick', 'hat', 'openhat', 'hat'];
+  events.forEach((e, i) => assert.equal(e.type, expected[i], `hit ${i}: ${e.type} ≠ ${expected[i]}`));
+});
+
 test('dynamics span a wide range: ghosts are quiet, accents are loud', () => {
   const r = (s) => mulberry32(s);
   const placed = [

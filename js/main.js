@@ -65,9 +65,10 @@ let micBusy = false;
 let kitName = 'real'; // the sampled acoustic kit is the default sound
 let realKit = null;
 let realKitPromise = null;
-// 'full' turns a sparse take into a produced beat (hats on 8ths, backbeat);
-// your literal hits are always available via ▶ Original and the Raw style
-let styleLevel = 'full';
+// 'faithful' plays the performance exactly as beatboxed — original
+// micro-timing, dynamics, open hats — with only double-triggers cleaned.
+// The take IS the groove; templates ('full') are opt-in via hidden chips.
+let styleLevel = 'faithful';
 let sensitivity = 0.65;
 let speakerGuard = false;
 let meterLevel = 0;
