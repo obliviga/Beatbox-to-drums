@@ -32,7 +32,7 @@ export class Waveform {
     return this.analyser;
   }
 
-  /** Sample the current amplitude — call once per animation frame. */
+  /** Sample the current amplitude from the analyser — once per frame. */
   sample() {
     if (!this.analyser) return;
     this.analyser.getFloatTimeDomainData(this.data);
@@ -41,7 +41,12 @@ export class Waveform {
       const a = this.data[i] < 0 ? -this.data[i] : this.data[i];
       if (a > peak) peak = a;
     }
-    this.bars.push(Math.min(1, peak));
+    this.push(peak);
+  }
+
+  /** Push an externally computed amplitude (e.g. media-element playback). */
+  push(value) {
+    this.bars.push(Math.min(1, Math.max(0, value)));
     if (this.maxBars && this.bars.length > this.maxBars) {
       this.bars.splice(0, this.bars.length - this.maxBars);
     }

@@ -14,7 +14,7 @@
 
 import { DrumEngine, KIT_NAMES } from './audio-engine.js';
 import { analyzeHit, classifyHit, buildProfile, classifyWithProfile } from './classifier.js';
-import { LoopRecorder, renderLoopWav, STYLE_LEVELS } from './recorder.js';
+import { LoopRecorder, renderLoopWav, encodeWavPCM16, STYLE_LEVELS } from './recorder.js';
 import { Metronome } from './metronome.js';
 import { Timeline } from './timeline.js';
 import { Waveform } from './waveform.js';
@@ -79,7 +79,13 @@ const MAX_RAW_SECONDS = 60;
 let rawChunks = [];
 let rawTakeBuffer = null;
 let originalPlaying = false;
-let origSource = null;
+// ▶ Original plays through an <audio> media element, NOT the Web Audio
+// graph: phones route media elements to the loud media speaker (like any
+// music app), while graphs that ever touched the mic can stay stuck in
+// quiet call-mode routing. The take is volume-normalized like a voice memo.
+let origAudio = null;
+let origUrl = null;
+let rawTakeGain = 1;
 let micReleaseTimer = null;
 let pendingAnalysis = false; // whole-clip analysis runs once the take flushes
 // Using the mic flips phones into call-mode audio routing (the quiet
@@ -593,37 +599,73 @@ els.playBtn.addEventListener('click', async () => {
   if (recorder.state === 'idle') recorder.play(loopEnabled);
 });
 
-/* ---------- original-take playback ---------- */
+/* ---------- original-take playback (media element = media speaker) ---------- */
+
+function ensureOriginalUrl() {
+  if (origUrl) return origUrl;
+  if (!rawTakeBuffer) return null;
+  const data = rawTakeBuffer.getChannelData(0);
+  let peak = 0;
+  for (let i = 0; i < data.length; i++) {
+    const a = data[i] < 0 ? -data[i] : data[i];
+    if (a > peak) peak = a;
+  }
+  // voice-memo-style makeup gain so the take isn't whisper-quiet next to
+  // the produced drums (cap the boost so noise floors stay tame)
+  rawTakeGain = peak > 0.001 ? Math.min(6, 0.9 / peak) : 1;
+  const scaled = new Float32Array(data.length);
+  for (let i = 0; i < data.length; i++) scaled[i] = data[i] * rawTakeGain;
+  const wav = encodeWavPCM16([scaled], rawTakeBuffer.sampleRate);
+  origUrl = URL.createObjectURL(new Blob([wav], { type: 'audio/wav' }));
+  return origUrl;
+}
+
+function invalidateOriginalUrl() {
+  if (origUrl) {
+    URL.revokeObjectURL(origUrl);
+    origUrl = null;
+  }
+  rawTakeGain = 1;
+}
+
+function onOriginalEnded() {
+  originalPlaying = false;
+  setStatus(takeSummary
+    ? `${takeSummary} — ▶ Drums to hear it, ▶ Original for your take`
+    : 'Press ● Record and beatbox');
+  updateTransportUI();
+  maybeRebuildAudio();
+}
 
 function playOriginal() {
   if (!rawTakeBuffer || originalPlaying || calibration) return;
   ensureAudio();
   if (recorder.state === 'playing') recorder.stopPlay();
-  const src = ctx.createBufferSource();
-  src.buffer = rawTakeBuffer;
-  const gain = ctx.createGain();
-  gain.gain.value = 1;
-  src.connect(gain).connect(ctx.destination);
-  if (waveform) gain.connect(waveform.attach(ctx));
-  src.onended = () => {
-    originalPlaying = false;
-    origSource = null;
-    setStatus(takeSummary
-      ? `${takeSummary} — ▶ Drums to hear it, ▶ Original for your take`
-      : 'Press ● Record and beatbox');
-    updateTransportUI();
-    maybeRebuildAudio();
-  };
-  origSource = src;
+  const url = ensureOriginalUrl();
+  if (!url) return;
+  if (!origAudio) {
+    origAudio = new Audio();
+    origAudio.setAttribute('playsinline', '');
+    origAudio.preload = 'auto';
+    origAudio.addEventListener('ended', onOriginalEnded);
+  }
+  if (origAudio.src !== url) origAudio.src = url;
+  origAudio.currentTime = 0;
   originalPlaying = true;
-  src.start();
+  origAudio.play().catch(() => {
+    originalPlaying = false;
+    setStatus('Couldn’t play the recording — try again.', true);
+    updateTransportUI();
+  });
   setStatus('Playing your original recording ▶');
   updateTransportUI();
 }
 
 function stopOriginal() {
-  if (origSource) {
-    try { origSource.stop(); } catch { /* already stopped */ }
+  if (origAudio && originalPlaying) {
+    origAudio.pause();
+    origAudio.currentTime = 0;
+    onOriginalEnded();
   }
 }
 
@@ -768,6 +810,7 @@ function onRecorderState(state) {
     // capture the raw take alongside the detected hits
     rawChunks = [];
     rawTakeBuffer = null;
+    invalidateOriginalUrl();
     if (workletNode) workletNode.port.postMessage({ type: 'stream', on: true });
   }
   // The mic is hot only while a take is being captured — release it as
@@ -947,7 +990,21 @@ if (els.debugChk && els.debugLine) {
   }
 
   if (waveform) {
-    waveform.sample();
+    if (originalPlaying && rawTakeBuffer && origAudio) {
+      // media-element playback bypasses the audio graph, so the waveform
+      // is driven from the known buffer at the playhead position
+      const data = rawTakeBuffer.getChannelData(0);
+      const start = Math.floor(origAudio.currentTime * rawTakeBuffer.sampleRate);
+      const end = Math.min(start + Math.floor(rawTakeBuffer.sampleRate / 50), data.length);
+      let peak = 0;
+      for (let i = start; i < end; i++) {
+        const a = data[i] < 0 ? -data[i] : data[i];
+        if (a > peak) peak = a;
+      }
+      waveform.push(peak * rawTakeGain);
+    } else {
+      waveform.sample();
+    }
     waveform.render({
       live: micOn || originalPlaying || (recorder && recorder.state === 'playing'),
       recording: !!(recorder && (recorder.state === 'recording' || recorder.state === 'armed')),

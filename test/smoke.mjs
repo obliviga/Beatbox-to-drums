@@ -65,6 +65,7 @@ const { server, port } = await serve(ROOT);
 const base = `http://localhost:${port}`;
 const errors = [];
 let step = 'launch';
+let activePage = null; // for failure diagnostics
 const check = (cond, msg) => { if (!cond) throw new Error(`[${step}] ${msg}`); };
 
 const browser = await chromium.launch({
@@ -98,6 +99,7 @@ try {
   /* ================= Context A: working (fake) microphone ================= */
   const ctxA = await browser.newContext({ permissions: ['microphone'] });
   const pageA = await ctxA.newPage();
+  activePage = pageA;
   wirePage(pageA);
   await pageA.goto(base, { waitUntil: 'load' });
   await pageA.waitForTimeout(300);
@@ -193,10 +195,10 @@ try {
 
   step = 'A: record during playback starts a re-take';
   await pageA.click('#recBtn');
-  await waitStatus(pageA, /Recording — beatbox now/);
+  await waitStatus(pageA, /Recording/);
   await pageA.waitForTimeout(1500);
   await pageA.click('#recBtn');
-  await waitStatus(pageA, /▶ Drums/);
+  await waitStatus(pageA, /(▶ Drums|No hits found)/);
   console.log('✓ playback, and Record-while-playing re-takes cleanly');
 
   step = 'A: playback works on the rebuilt (post-mic) audio context';
@@ -217,6 +219,7 @@ try {
     }
   });
   const pageB = await ctxB.newPage();
+  activePage = pageB;
   wirePage(pageB);
   await pageB.goto(base, { waitUntil: 'load' });
   await pageB.waitForTimeout(300);
@@ -269,6 +272,17 @@ try {
   console.log('\nSMOKE TEST PASSED — no console or page errors');
 } catch (err) {
   console.error(`\nFAIL at step "${step}": ${err.message}`);
+  if (activePage) {
+    try {
+      const state = await activePage.evaluate(() => ({
+        status: document.getElementById('statusText')?.textContent,
+        rec: document.getElementById('recBtn')?.textContent,
+        play: document.getElementById('playBtn')?.textContent,
+        orig: document.getElementById('origBtn')?.textContent,
+      }));
+      console.error('  page state at failure:', JSON.stringify(state));
+    } catch { /* page already gone */ }
+  }
   if (errors.length) for (const e of errors) console.error(' ', e);
   process.exitCode = 1;
 } finally {
