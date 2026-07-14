@@ -13,7 +13,7 @@
  */
 
 import { DrumEngine, KIT_NAMES } from './audio-engine.js';
-import { analyzeHit, classifyHit } from './classifier.js';
+import { analyzeHit, classifyHit, buildProfile, classifyWithProfile } from './classifier.js';
 import { LoopRecorder, renderLoopWav, STYLE_LEVELS } from './recorder.js';
 import { Metronome } from './metronome.js';
 import { Timeline } from './timeline.js';
@@ -36,7 +36,9 @@ const els = {
   bpmInput: document.getElementById('bpmInput'),
   metChk: document.getElementById('metChk'),
   recBtn: document.getElementById('recBtn'),
+  origBtn: document.getElementById('origBtn'),
   playBtn: document.getElementById('playBtn'),
+  tuneBtn: document.getElementById('tuneBtn'),
   loopChk: document.getElementById('loopChk'),
   clearBtn: document.getElementById('clearBtn'),
   exportBtn: document.getElementById('exportBtn'),
@@ -66,6 +68,26 @@ let sensitivity = 0.65;
 let speakerGuard = false;
 let meterLevel = 0;
 let prevRecorderState = 'idle';
+let takeSummary = null;
+
+// Raw take (what the user actually recorded), streamed from the worklet
+const MAX_RAW_SECONDS = 60;
+let rawChunks = [];
+let rawTakeBuffer = null;
+let originalPlaying = false;
+let origSource = null;
+let micReleaseTimer = null;
+
+// Personal voice profile ("Tune to my voice") — on-device k-NN
+const PROFILE_KEY = 'b2d-voice-profile-v1';
+const CAL_STAGES = [
+  { label: 'kick', prompt: '“B”' },
+  { label: 'snare', prompt: '“Pss”' },
+  { label: 'hat', prompt: '“Ts”' },
+];
+const CAL_PER_STAGE = 4;
+let voiceProfile = null;
+let calibration = null; // { stage, count, examples } while tuning
 
 const timeline = els.timelineCanvas ? new Timeline(els.timelineCanvas) : null;
 const waveform = els.waveformCanvas ? new Waveform(els.waveformCanvas) : null;
@@ -114,6 +136,27 @@ function saveSettings() {
 function clampBpm(n) {
   if (!Number.isFinite(n)) return 90;
   return Math.min(240, Math.max(40, Math.round(n)));
+}
+
+function loadProfile() {
+  try {
+    const p = JSON.parse(localStorage.getItem(PROFILE_KEY));
+    if (p && Array.isArray(p.examples) && p.mean && p.std) voiceProfile = p;
+  } catch { /* no profile yet */ }
+  reflectTuneButton();
+}
+
+function saveProfile() {
+  try { localStorage.setItem(PROFILE_KEY, JSON.stringify(voiceProfile)); } catch { /* fine */ }
+}
+
+function reflectTuneButton() {
+  if (!els.tuneBtn) return;
+  els.tuneBtn.classList.toggle('active', !!calibration);
+  els.tuneBtn.classList.toggle('tuned', !!voiceProfile && !calibration);
+  els.tuneBtn.textContent = calibration
+    ? '✕ Cancel tuning'
+    : voiceProfile ? '🎯 Re-tune my voice ✓' : '🎯 Tune to my voice';
 }
 
 /* ---------- audio setup ---------- */
@@ -238,13 +281,44 @@ function onWorkletMessage(e) {
     if (msg.rms > meterLevel) meterLevel = msg.rms;
     return;
   }
+  if (msg.type === 'chunk') {
+    const cap = MAX_RAW_SECONDS * ctx.sampleRate;
+    const have = rawChunks.reduce((n, c) => n + c.length, 0);
+    if (msg.samples.length && have < cap) rawChunks.push(msg.samples);
+    if (msg.last) finalizeRawTake();
+    return;
+  }
   if (msg.type === 'onset') {
     const features = analyzeHit(msg.samples, ctx.sampleRate);
-    const type = classifyHit(features);
+    if (calibration) {
+      handleCalibrationOnset(features, msg.peak);
+      return;
+    }
+    // the learned profile (if trained) knows this user's sounds far
+    // better than the generic rule tree
+    const type = voiceProfile
+      ? (classifyWithProfile(features, voiceProfile) || classifyHit(features))
+      : classifyHit(features);
     if (!type) return;
     const velocity = Math.min(1, 0.35 + msg.peak * 1.2);
     performHit(type, velocity, { features, fromMic: true });
   }
+}
+
+function finalizeRawTake() {
+  const total = rawChunks.reduce((n, c) => n + c.length, 0);
+  if (total) {
+    const buf = ctx.createBuffer(1, total, ctx.sampleRate);
+    const data = buf.getChannelData(0);
+    let off = 0;
+    for (const c of rawChunks) {
+      data.set(c, off);
+      off += c.length;
+    }
+    rawTakeBuffer = buf;
+  }
+  rawChunks = [];
+  updateTransportUI();
 }
 
 /* ---------- hits, pads, debug ---------- */
@@ -254,6 +328,7 @@ function detectionLatency() {
 }
 
 function performHit(type, velocity, { features = null, fromMic = false } = {}) {
+  if (calibration) return; // tuning session owns the mic
   const capturing = recorder && (recorder.state === 'recording' || recorder.state === 'armed');
   // Recording is silent capture — the drums are only heard on ▶ Play.
   // (Also means the speakers can't feed back into the take.)
@@ -428,8 +503,10 @@ if (els.metChk) {
 /* ---------- loop recorder ---------- */
 
 els.recBtn.addEventListener('click', async () => {
+  if (calibration) return;
   ensureAudio();
   syncRecorderSettings();
+  if (originalPlaying) stopOriginal();
   // pressing Record during playback = stop the loop and re-take
   if (recorder.state === 'playing') recorder.stopPlay();
   if (recorder.state === 'idle') {
@@ -455,11 +532,12 @@ els.recBtn.addEventListener('click', async () => {
 els.playBtn.addEventListener('click', async () => {
   ensureAudio();
   syncRecorderSettings();
+  if (originalPlaying) stopOriginal();
   if (recorder.state === 'playing') {
     recorder.stopPlay();
     return;
   }
-  if (recorder.state !== 'idle') return;
+  if (recorder.state !== 'idle' || calibration) return;
   // give the real kit a moment to finish loading so the first playback
   // already uses the sampled drums (synth fallback covers a slow network)
   if (kitName === 'real' && !realKit && realKitPromise) {
@@ -468,6 +546,129 @@ els.playBtn.addEventListener('click', async () => {
   }
   if (recorder.state === 'idle') recorder.play(loopEnabled);
 });
+
+/* ---------- original-take playback ---------- */
+
+function playOriginal() {
+  if (!rawTakeBuffer || originalPlaying || calibration) return;
+  ensureAudio();
+  if (recorder.state === 'playing') recorder.stopPlay();
+  const src = ctx.createBufferSource();
+  src.buffer = rawTakeBuffer;
+  const gain = ctx.createGain();
+  gain.gain.value = 1;
+  src.connect(gain).connect(ctx.destination);
+  if (waveform) gain.connect(waveform.attach(ctx));
+  src.onended = () => {
+    originalPlaying = false;
+    origSource = null;
+    setStatus(takeSummary
+      ? `${takeSummary} — ▶ Drums to hear it, ▶ Original for your take`
+      : 'Press ● Record and beatbox');
+    updateTransportUI();
+  };
+  origSource = src;
+  originalPlaying = true;
+  src.start();
+  setStatus('Playing your original recording ▶');
+  updateTransportUI();
+}
+
+function stopOriginal() {
+  if (origSource) {
+    try { origSource.stop(); } catch { /* already stopped */ }
+  }
+}
+
+if (els.origBtn) {
+  els.origBtn.addEventListener('click', () => {
+    if (originalPlaying) stopOriginal();
+    else playOriginal();
+  });
+}
+
+/* ---------- "Tune to my voice" (on-device learning) ---------- */
+
+async function startCalibration() {
+  if (calibration) {
+    cancelCalibration();
+    return;
+  }
+  ensureAudio();
+  if (originalPlaying) stopOriginal();
+  if (recorder.state === 'playing') recorder.stopPlay();
+  if (recorder.state !== 'idle') return;
+  if (!micOn && !micBusy) {
+    micBusy = true;
+    try {
+      await startMicSession();
+    } catch (err) {
+      micBusy = false;
+      setStatus(friendlyMicError(err), true);
+      return;
+    }
+    micBusy = false;
+  }
+  clearTimeout(micReleaseTimer);
+  micReleaseTimer = null;
+  calibration = { stage: 0, count: 0, examples: [] };
+  reflectTuneButton();
+  updateTransportUI();
+  calibrationStatus();
+}
+
+function calibrationStatus(extra = '') {
+  const s = CAL_STAGES[calibration.stage];
+  setStatus(`Tuning ${calibration.stage + 1}/3 — say ${s.prompt} like a ${s.label}, ${CAL_PER_STAGE} times · ${calibration.count}/${CAL_PER_STAGE}${extra}`);
+}
+
+function handleCalibrationOnset(features, peak) {
+  if (!calibration) return;
+  if (!features || peak < 0.04) {
+    calibrationStatus(' — a bit louder?');
+    return;
+  }
+  const stage = CAL_STAGES[calibration.stage];
+  calibration.examples.push({ label: stage.label, features });
+  calibration.count++;
+  flashPad(stage.label);
+  if (calibration.count >= CAL_PER_STAGE) {
+    calibration.stage++;
+    calibration.count = 0;
+    if (calibration.stage >= CAL_STAGES.length) {
+      finishCalibration();
+      return;
+    }
+  }
+  calibrationStatus();
+}
+
+function finishCalibration() {
+  const profile = buildProfile(calibration.examples);
+  calibration = null;
+  stopMicQuiet();
+  if (profile) {
+    voiceProfile = profile;
+    saveProfile();
+    setStatus('Tuned to your voice ✓ — recognition now uses your own sounds. Record a beat!');
+  } else {
+    setStatus('Tuning didn’t get enough clean examples — try again.', true);
+  }
+  reflectTuneButton();
+  updateTransportUI();
+}
+
+function cancelCalibration() {
+  calibration = null;
+  stopMicQuiet();
+  setStatus('Tuning cancelled.');
+  reflectTuneButton();
+  updateTransportUI();
+}
+
+if (els.tuneBtn) {
+  els.tuneBtn.addEventListener('click', startCalibration);
+}
 
 if (els.clearBtn) {
   els.clearBtn.addEventListener('click', () => {
@@ -514,9 +715,26 @@ if (els.exportBtn) {
 }
 
 function onRecorderState(state) {
+  if (state === 'recording') {
+    // capture the raw take alongside the detected hits
+    rawChunks = [];
+    rawTakeBuffer = null;
+    if (workletNode) workletNode.port.postMessage({ type: 'stream', on: true });
+  }
   // The mic is hot only while a take is being captured — release it as
   // soon as recording ends so nothing can trigger between takes.
-  if (state === 'idle' && (prevRecorderState === 'recording' || prevRecorderState === 'armed') && micOn) {
+  if (state === 'idle' && prevRecorderState === 'recording' && micOn && workletNode) {
+    // ask the worklet to flush the raw stream, then let go of the mic —
+    // unless a re-take or a tuning session claimed it in the meantime
+    workletNode.port.postMessage({ type: 'stream', on: false });
+    clearTimeout(micReleaseTimer);
+    micReleaseTimer = setTimeout(() => {
+      micReleaseTimer = null;
+      if (calibration || !recorder || recorder.state === 'recording' || recorder.state === 'armed') return;
+      if (!rawTakeBuffer && rawChunks.length) finalizeRawTake();
+      if (micOn) stopMicQuiet();
+    }, 150);
+  } else if (state === 'idle' && (prevRecorderState === 'recording' || prevRecorderState === 'armed') && micOn) {
     stopMicQuiet();
   }
   if (state === 'armed') {
@@ -542,7 +760,8 @@ function onRecorderState(state) {
       } else {
         summary = `Captured ${recorder.events.length} hit${recorder.events.length === 1 ? '' : 's'}`;
       }
-      setStatus(`${summary} — press ▶ Play`);
+      takeSummary = summary;
+      setStatus(`${summary} — ▶ Drums to hear it, ▶ Original for your take`);
       els.playBtn.classList.add('ready');
       // Auto-play is disabled while the UI is minimal — Play is the star.
       // autoPlay(summary);
@@ -601,14 +820,23 @@ function updateTransportUI() {
 
   // Record stays available during playback: pressing it stops the loop
   // and immediately starts a new take.
-  els.recBtn.disabled = false;
+  els.recBtn.disabled = !!calibration;
   els.recBtn.classList.toggle('recording', state === 'recording' || state === 'armed');
   els.recBtn.textContent = state === 'recording' ? '■ Stop' : state === 'armed' ? '■ Cancel' : '● Record';
 
-  els.playBtn.disabled = state === 'recording' || state === 'armed' || (!hasEvents && state !== 'playing');
+  els.playBtn.disabled = !!calibration || state === 'recording' || state === 'armed' || (!hasEvents && state !== 'playing');
   els.playBtn.classList.toggle('playing', state === 'playing');
-  els.playBtn.textContent = state === 'playing' ? '■ Stop' : '▶ Play';
+  els.playBtn.textContent = state === 'playing' ? '■ Stop' : '▶ Drums';
   if (els.playBtn.disabled || state === 'playing') els.playBtn.classList.remove('ready');
+
+  if (els.origBtn) {
+    els.origBtn.disabled = !!calibration || !rawTakeBuffer || state === 'recording' || state === 'armed';
+    els.origBtn.classList.toggle('playing', originalPlaying);
+    els.origBtn.textContent = originalPlaying ? '■ Stop' : '▶ Original';
+  }
+  if (els.tuneBtn) {
+    els.tuneBtn.disabled = state === 'recording' || state === 'armed';
+  }
 
   if (els.clearBtn) els.clearBtn.disabled = state !== 'idle' || !hasEvents;
   if (els.exportBtn) els.exportBtn.disabled = state !== 'idle' || !hasEvents;
@@ -657,7 +885,7 @@ if (els.debugChk && els.debugLine) {
   if (waveform) {
     waveform.sample();
     waveform.render({
-      live: micOn || (recorder && recorder.state === 'playing'),
+      live: micOn || originalPlaying || (recorder && recorder.state === 'playing'),
       recording: !!(recorder && (recorder.state === 'recording' || recorder.state === 'armed')),
     });
   }
@@ -699,6 +927,7 @@ if (els.debugChk && els.debugLine) {
 /* ---------- init ---------- */
 
 loadSettings();
+loadProfile();
 updateTransportUI();
 updateRecCount();
 

@@ -62,6 +62,31 @@ body {
   grid-template-columns: 1fr 1fr;
   gap: 12px;
 }
+.big-controls.three { grid-template-columns: 1.1fr 1fr 1fr; }
+@media (max-width: 380px) {
+  .big-controls.three { grid-template-columns: 1fr; }
+}
+
+.big-btn.orig { color: var(--accent); border-color: rgba(108, 140, 255, 0.45); }
+.big-btn.orig.playing {
+  background: rgba(108, 140, 255, 0.12);
+  border-color: var(--accent);
+}
+
+.tune-row { text-align: center; }
+.tune-btn {
+  border: 1px solid #2c3147;
+  background: transparent;
+  color: var(--text-dim);
+  border-radius: 999px;
+  padding: 8px 16px;
+  font-size: 0.85rem;
+  cursor: pointer;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+.tune-btn.tuned { color: var(--snare); border-color: rgba(77, 214, 193, 0.4); }
+.tune-btn.active { color: var(--rec); border-color: var(--rec); animation: blink 1s step-end infinite; }
 .big-btn {
   border: 1px solid #2c3147;
   border-radius: 18px;

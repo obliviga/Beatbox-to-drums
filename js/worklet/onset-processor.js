@@ -13,6 +13,7 @@
  */
 
 const CAPTURE_SAMPLES = 1024; // ~21 ms @ 48 kHz — enough attack to classify
+const STREAM_CHUNK = 8192;    // raw-audio streaming block (~170 ms @ 48 kHz)
 
 class OnsetProcessor extends AudioWorkletProcessor {
   constructor() {
@@ -30,6 +31,11 @@ class OnsetProcessor extends AudioWorkletProcessor {
     this.peak = 0;
     this.levelCounter = 0;
 
+    // Raw-audio streaming (lets the app keep what the user actually said)
+    this.streaming = false;
+    this.streamBuf = null;
+    this.streamIdx = 0;
+
     this.port.onmessage = (e) => {
       const d = e.data;
       if (!d) return;
@@ -41,6 +47,22 @@ class OnsetProcessor extends AudioWorkletProcessor {
         // is coming out of the speakers, so it can't re-trigger the mic.
         const samples = Math.round((d.sec || 0) * sampleRate);
         if (samples > this.refractory) this.refractory = samples;
+      } else if (d.type === 'stream') {
+        if (d.on && !this.streaming) {
+          this.streaming = true;
+          this.streamBuf = new Float32Array(STREAM_CHUNK);
+          this.streamIdx = 0;
+        } else if (!d.on && this.streaming) {
+          this.streaming = false;
+          if (this.streamIdx > 0) {
+            const tail = this.streamBuf.subarray(0, this.streamIdx).slice();
+            this.port.postMessage({ type: 'chunk', samples: tail, last: true }, [tail.buffer]);
+          } else {
+            this.port.postMessage({ type: 'chunk', samples: new Float32Array(0), last: true });
+          }
+          this.streamBuf = null;
+          this.streamIdx = 0;
+        }
       }
     };
   }
@@ -58,6 +80,17 @@ class OnsetProcessor extends AudioWorkletProcessor {
       if (a > peak) peak = a;
     }
     const rms = Math.sqrt(sum / channel.length);
+
+    if (this.streaming) {
+      this.streamBuf.set(channel, this.streamIdx);
+      this.streamIdx += channel.length;
+      if (this.streamIdx >= STREAM_CHUNK) {
+        const full = this.streamBuf;
+        this.port.postMessage({ type: 'chunk', samples: full, last: false }, [full.buffer]);
+        this.streamBuf = new Float32Array(STREAM_CHUNK);
+        this.streamIdx = 0;
+      }
+    }
 
     if (this.capture) {
       // Capture in progress: append this block, flush when full.

@@ -106,9 +106,12 @@ try {
   for (const sel of ['#micBtn', '.pad', '.chip', '#bpmInput', '#exportBtn', '#timeline', '#debugChk']) {
     check((await pageA.$(sel)) === null, `${sel} should be hidden in the minimal UI`);
   }
-  check((await pageA.$('#recBtn')) && (await pageA.$('#playBtn')) && (await pageA.$('#waveform')), 'core elements missing');
-  check(await pageA.$eval('#playBtn', (el) => el.disabled), 'Play should start disabled');
-  console.log('✓ minimal UI: just Record, waveform, Play');
+  for (const sel of ['#recBtn', '#origBtn', '#playBtn', '#waveform', '#tuneBtn']) {
+    check((await pageA.$(sel)) !== null, `${sel} missing`);
+  }
+  check(await pageA.$eval('#playBtn', (el) => el.disabled), 'Drums should start disabled');
+  check(await pageA.$eval('#origBtn', (el) => el.disabled), 'Original should start disabled');
+  console.log('✓ minimal UI: Record, waveform, Original, Drums, tune');
 
   step = 'A: service worker';
   const swOk = await pageA.evaluate(() => Promise.race([
@@ -129,9 +132,17 @@ try {
 
   step = 'A: stop converts the take';
   await pageA.click('#recBtn');
-  await waitStatus(pageA, /(Converted ✓|Captured \d+ hit).*press ▶ Play/);
-  check(!(await pageA.$eval('#playBtn', (el) => el.disabled)), 'Play should be enabled after a take');
-  console.log(`✓ stop converts and hands off to Play ("${await statusOf(pageA)}")`);
+  await waitStatus(pageA, /(Converted ✓|Captured \d+ hit).*▶ Drums/);
+  check(!(await pageA.$eval('#playBtn', (el) => el.disabled)), 'Drums should be enabled after a take');
+  console.log(`✓ stop converts and hands off ("${await statusOf(pageA)}")`);
+
+  step = 'A: play back the original recording';
+  await pageA.waitForFunction(() => !document.getElementById('origBtn').disabled, null, { timeout: 3000 });
+  await pageA.click('#origBtn');
+  await waitStatus(pageA, /Playing your original recording/);
+  check((await pageA.textContent('#origBtn')).includes('Stop'), 'Original should toggle to Stop');
+  await waitStatus(pageA, /▶ Drums/, 10000); // take is ~4 s; wait for it to finish
+  console.log('✓ original take plays back and returns cleanly');
 
   step = 'A: play the converted drums';
   await pageA.click('#playBtn');
@@ -150,8 +161,17 @@ try {
   await waitStatus(pageA, /Recording — beatbox now/);
   await pageA.waitForTimeout(1500);
   await pageA.click('#recBtn');
-  await waitStatus(pageA, /press ▶ Play/);
+  await waitStatus(pageA, /▶ Drums/);
   console.log('✓ playback, and Record-while-playing re-takes cleanly');
+
+  step = 'A: tune to my voice';
+  await pageA.click('#tuneBtn');
+  await waitStatus(pageA, /Tuning 1\/3/);
+  await waitStatus(pageA, /Tuned to your voice/, 30000); // fake mic pulses feed the examples
+  const profileSaved = await pageA.evaluate(() => !!localStorage.getItem('b2d-voice-profile-v1'));
+  check(profileSaved, 'voice profile not persisted');
+  check((await pageA.textContent('#tuneBtn')).includes('Re-tune'), 'tune button should show tuned state');
+  console.log('✓ voice tuning: 3 stages collected, profile learned and persisted');
   await ctxA.close();
 
   /* ============ Context B: microphone denied (keyboard-driven hits) ============ */
@@ -193,6 +213,13 @@ try {
   await pageB.waitForTimeout(1000);
   await pageB.click('#playBtn');
   console.log('✓ converted beat plays and stops');
+
+  step = 'B: no mic means no original take, and tuning explains itself';
+  check(await pageB.$eval('#origBtn', (el) => el.disabled), 'Original should stay disabled without mic audio');
+  await pageB.click('#tuneBtn');
+  await waitStatus(pageB, /denied/);
+  check((await pageB.textContent('#tuneBtn')).includes('Tune to my voice'), 'tuning should not start without a mic');
+  console.log('✓ mic-less paths degrade clearly (no Original, tuning reports denial)');
 
   step = 'B: empty take gives explicit feedback';
   await pageB.click('#recBtn');

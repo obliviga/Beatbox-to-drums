@@ -48,21 +48,38 @@ export function analyzeHit(samples, sampleRate) {
   fft(re, im);
 
   const binHz = sampleRate / FFT_SIZE;
+  const bins = FFT_SIZE / 2;
   let total = 0;
   let weighted = 0;
   let low = 0;
   let mid = 0;
   let high = 0;
-  for (let k = 1; k < FFT_SIZE / 2; k++) {
+  let logSum = 0;
+  for (let k = 1; k < bins; k++) {
     const power = re[k] * re[k] + im[k] * im[k];
     const freq = k * binHz;
     total += power;
     weighted += freq * power;
+    logSum += Math.log(power + 1e-12);
     if (freq < LOW_BAND_HZ) low += power;
     else if (freq < HIGH_BAND_HZ) mid += power;
     else high += power;
   }
   if (total < 1e-10) return null;
+
+  // spectral flatness: geometric / arithmetic mean (1 = noise, ~0 = tonal)
+  const flatness = Math.exp(logSum / (bins - 1)) / (total / (bins - 1) + 1e-12);
+
+  // 85% rolloff: frequency below which most of the energy sits
+  let cum = 0;
+  let rolloff = binHz * (bins - 1);
+  for (let k = 1; k < bins; k++) {
+    cum += re[k] * re[k] + im[k] * im[k];
+    if (cum >= 0.85 * total) {
+      rolloff = k * binHz;
+      break;
+    }
+  }
 
   return {
     centroid: weighted / total,
@@ -70,6 +87,8 @@ export function analyzeHit(samples, sampleRate) {
     low: low / total,
     mid: mid / total,
     high: high / total,
+    flatness,
+    rolloff,
   };
 }
 
@@ -86,6 +105,68 @@ export function classifyHit(features) {
   if (centroid >= HAT_CENTROID_HZ || zcr >= HAT_ZCR || high >= HAT_HIGH_RATIO) return 'hat';
   if (centroid <= KICK_CENTROID_HZ && low >= KICK_LOW_RATIO) return 'kick';
   return 'snare';
+}
+
+/* ---------- personal voice profile (on-device learning) ----------
+ *
+ * The rule tree above encodes a *typical* voice. Everyone's "B"/"Pss"/"Ts"
+ * differs, so the app can learn yours: a few labelled examples per drum
+ * become a z-score-normalized k-nearest-neighbor model — trained in
+ * microseconds, stored locally, and far more accurate than fixed
+ * thresholds because it's fitted to the person actually beatboxing.
+ */
+
+/** Feature vector used by the learned classifier. */
+export function featureVector(f) {
+  return [f.centroid, f.zcr, f.low, f.mid, f.high, f.flatness || 0, f.rolloff || 0];
+}
+
+/**
+ * Build a profile from labelled examples.
+ * @param {{label:'kick'|'snare'|'hat', features:object}[]} examples
+ * @returns {{mean:number[], std:number[], examples:{label:string, vec:number[]}[]}|null}
+ */
+export function buildProfile(examples) {
+  if (!examples || examples.length < 3) return null;
+  const vecs = examples.map((e) => featureVector(e.features));
+  const dims = vecs[0].length;
+  const mean = new Array(dims).fill(0);
+  const std = new Array(dims).fill(0);
+  for (const v of vecs) for (let d = 0; d < dims; d++) mean[d] += v[d];
+  for (let d = 0; d < dims; d++) mean[d] /= vecs.length;
+  for (const v of vecs) for (let d = 0; d < dims; d++) std[d] += (v[d] - mean[d]) ** 2;
+  for (let d = 0; d < dims; d++) std[d] = Math.max(Math.sqrt(std[d] / vecs.length), 1e-6);
+  const norm = (v) => v.map((x, d) => (x - mean[d]) / std[d]);
+  return {
+    mean,
+    std,
+    examples: examples.map((e, i) => ({ label: e.label, vec: norm(vecs[i]) })),
+  };
+}
+
+/**
+ * Distance-weighted k-NN against a profile.
+ * @returns {'kick'|'snare'|'hat'|null}
+ */
+export function classifyWithProfile(features, profile, k = 3) {
+  if (!features || !profile || !profile.examples || !profile.examples.length) return null;
+  const vec = featureVector(features).map((x, d) => (x - profile.mean[d]) / profile.std[d]);
+  const scored = profile.examples
+    .map((e) => {
+      let dist = 0;
+      for (let d = 0; d < vec.length; d++) dist += (vec[d] - e.vec[d]) ** 2;
+      return { label: e.label, dist: Math.sqrt(dist) };
+    })
+    .sort((a, b) => a.dist - b.dist)
+    .slice(0, Math.min(k, profile.examples.length));
+  const votes = {};
+  for (const s of scored) votes[s.label] = (votes[s.label] || 0) + 1 / (s.dist + 1e-3);
+  let best = null;
+  let bestScore = -1;
+  for (const [label, score] of Object.entries(votes)) {
+    if (score > bestScore) { best = label; bestScore = score; }
+  }
+  return best;
 }
 
 /** In-place iterative radix-2 Cooley–Tukey FFT. Lengths must be powers of 2. */

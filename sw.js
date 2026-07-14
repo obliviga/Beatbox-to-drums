@@ -4,7 +4,7 @@
  * background so the next load picks up new deploys).
  */
 
-const CACHE = 'b2d-v6';
+const CACHE = 'b2d-v7';
 const SAMPLES = ['kick', 'snare', 'hat']
   .flatMap((d) => [1, 2, 3, 4, 5].map((i) => `samples/real/${d}_${i}.wav`));
 const ASSETS = [

@@ -100,6 +100,32 @@ test('suppress message blocks detection for its duration', () => {
   assert.equal(onsets(messages).length, 1, 'post-suppress hit must trigger');
 });
 
+test('raw-audio streaming delivers ordered chunks and flushes on stop', () => {
+  const { proc, messages } = makeProcessor();
+  proc.port.onmessage({ data: { type: 'stream', on: true } });
+  let s = 0;
+  const blocks = Array.from({ length: 70 }, () => {
+    const b = new Float32Array(BLOCK);
+    for (let i = 0; i < BLOCK; i++) b[i] = (s++ % 1000) / 1000;
+    return b;
+  });
+  feedBlocks(proc, blocks);
+  proc.port.onmessage({ data: { type: 'stream', on: false } });
+
+  const chunks = messages.filter((m) => m.type === 'chunk');
+  // 70 × 128 = 8960 samples → one full 8192 chunk + a 768-sample flush
+  assert.equal(chunks.length, 2);
+  assert.equal(chunks[0].samples.length, 8192);
+  assert.equal(chunks[1].samples.length, 768);
+  assert.equal(chunks[1].last, true);
+  // continuity across the chunk boundary
+  assert.ok(Math.abs(chunks[0].samples[8191] - ((8191 % 1000) / 1000)) < 1e-6);
+  assert.ok(Math.abs(chunks[1].samples[0] - ((8192 % 1000) / 1000)) < 1e-6);
+  // stream stays quiet after stop
+  feedBlocks(proc, blocks.slice(0, 5));
+  assert.equal(messages.filter((m) => m.type === 'chunk').length, 2);
+});
+
 test('end-to-end: captured attack windows classify correctly', () => {
   // Stream a kick-like plosive and a hat-like sibilant through the detector,
   // then classify what it captured — the full mic pipeline minus the browser.
