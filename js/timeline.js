@@ -4,7 +4,9 @@
  */
 
 const LANES = ['hat', 'snare', 'kick'];
-const LANE_COLORS = { kick: '#ff5d5d', snare: '#4dd6c1', hat: '#ffc24d' };
+const LANE_COLORS = { kick: '#ff5d5d', snare: '#4dd6c1', hat: '#ffc24d', openhat: '#ffd98a' };
+// open hats share the hat lane
+const LANE_OF = { kick: 'kick', snare: 'snare', hat: 'hat', openhat: 'hat' };
 
 export class Timeline {
   constructor(canvas) {
@@ -60,7 +62,7 @@ export class Timeline {
     // hits
     if (dur > 0) {
       for (const e of events) {
-        const lane = LANES.indexOf(e.type);
+        const lane = LANES.indexOf(LANE_OF[e.type] || e.type);
         if (lane === -1) continue;
         const x = Math.min(1, e.t / dur) * w;
         const y = lane * laneH + laneH / 2;

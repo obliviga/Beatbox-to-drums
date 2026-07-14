@@ -20,19 +20,20 @@ import { layerIndex } from './sample-kit.js';
 export const KIT_NAMES = ['real', 'acoustic', 'tr808', 'trap', 'electro', 'lofi', 'perc'];
 
 // Subtle stereo placement per instrument, like sitting at a kit
-const PAN = { kick: 0, snare: -0.08, hat: 0.14 };
+const PAN = { kick: 0, snare: -0.08, hat: 0.14, openhat: 0.14 };
 
 // How much of each drum feeds the shared room reverb — the "recorded
 // together in one room" glue. Kick stays tight, snare blooms most.
-const REVERB_SEND = { kick: 0.07, snare: 0.22, hat: 0.1 };
+const REVERB_SEND = { kick: 0.07, snare: 0.22, hat: 0.1, openhat: 0.13 };
 
 export class DrumEngine {
   constructor(ctx) {
     this.ctx = ctx;
     this.kit = 'acoustic';
     this.scheduled = new Set();
-    this.sampleKits = {};   // name → {kick|snare|hat: {boundaries, buffers}}
-    this._rrPhase = { kick: 0, snare: 0, hat: 0 }; // humanization counter
+    this.sampleKits = {};   // name → {kick|snare|hat|openhat: {boundaries, buffers}}
+    this._rrPhase = { kick: 0, snare: 0, hat: 0, openhat: 0 }; // humanization counter
+    this._ringingOpenHat = null; // {gain, when} — choked by the next hat
 
     /*
      * Production chain — what turns triggered one-shots into a mixed,
@@ -110,9 +111,10 @@ export class DrumEngine {
     if (sampleKit && sampleKit[type]) {
       sources = this._playSample(sampleKit[type], type, when, v);
     } else {
-      // synth voice — also the fallback while the 'real' kit is loading
+      // synth voice — also the fallback while the 'real' kit is loading;
+      // synth kits have no open hat, so it borrows the closed one
       const kitDef = KITS[this.kit] || KITS.acoustic;
-      const voice = kitDef[type];
+      const voice = kitDef[type] || (type === 'openhat' ? kitDef.hat : null);
       if (!voice) return;
       sources = voice(this.ctx, this._outputFor(type), this.noiseBuf, when, v);
     }
@@ -136,6 +138,18 @@ export class DrumEngine {
     gain.gain.value = 0.7 + 0.3 * v;
     src.connect(gain).connect(this._outputFor(type));
     src.start(when);
+
+    // Hi-hat choke: striking (or re-striking) the hats silences a still-
+    // ringing open hat — the pedal closes. Works for both live triggers
+    // and up-front offline scheduling because events arrive time-ordered.
+    if (type === 'hat' || type === 'openhat') {
+      const prev = this._ringingOpenHat;
+      if (prev && when > prev.when + 0.01) {
+        prev.gain.gain.setValueAtTime(prev.gain.gain.value, when);
+        prev.gain.gain.setTargetAtTime(0.0001, when, 0.012);
+      }
+      this._ringingOpenHat = type === 'openhat' ? { gain, when } : null;
+    }
     return [src];
   }
 

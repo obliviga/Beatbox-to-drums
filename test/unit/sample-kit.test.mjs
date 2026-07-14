@@ -18,8 +18,8 @@ test('layerIndex maps velocity to the right layer', () => {
   assert.equal(layerIndex(b, 1), 4);
 });
 
-test('manifest covers all three drums with five ordered layers each', () => {
-  for (const drum of ['kick', 'snare', 'hat']) {
+test('manifest covers all four drums with five ordered layers each', () => {
+  for (const drum of ['kick', 'snare', 'hat', 'openhat']) {
     const spec = REAL_KIT_MANIFEST[drum];
     assert.ok(spec, drum);
     assert.equal(spec.files.length, 5);

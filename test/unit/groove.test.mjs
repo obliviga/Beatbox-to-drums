@@ -134,6 +134,15 @@ test('full adds backbeat snares, bar-start kicks, and 8th hats', () => {
   assert.ok(full.every((e) => e.slot < SLOTS_PER_BAR));
 });
 
+test('full never stacks a closed hat on the performer\'s open hat', () => {
+  const grid = { bpm: 120, sixteenth: 0.125, offset: 0, anchorT: 0 };
+  const events = [ev(0, 'kick'), ev(0.75, 'openhat', 0.8), ev(1.0, 'snare')];
+  const groove = buildGroove(events, grid, { anchor: 'none', bars: 1 });
+  const full = groove.styles.full;
+  assert.ok(full.some((e) => e.type === 'openhat' && e.slot === 6), 'open hat preserved');
+  assert.ok(!full.some((e) => e.type === 'hat' && e.slot === 6), 'no closed hat stacked on slot 6');
+});
+
 test('full uses the performer\'s own velocities for generated hits', () => {
   const grid = { bpm: 120, sixteenth: 0.125, offset: 0, anchorT: 0 };
   const events = [ev(0, 'kick', 1), ev(0.5, 'snare', 0.6), ev(0.25, 'hat', 0.4)];

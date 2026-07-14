@@ -26,7 +26,8 @@ import { analyzeHit, classifyHit, featureVector } from './classifier.js';
 const FRAME = 128;               // envelope hop (~2.7 ms @ 48 kHz)
 const ATTACK_SAMPLES = 1024;     // same window the live path classifies on
 const MIN_SEP_SEC = 0.09;        // two hits can't be closer than this
-const PEAK_WINDOW_SEC = 0.06;    // where a hit's peak (velocity) is measured
+const PEAK_WINDOW_SEC = 0.06;    // where a hit's peak/energy (velocity) is measured
+const OPEN_HAT_SEC = 0.18;       // hat-cluster hits ringing at least this long are open hats
 const LABEL_ORDER = ['kick', 'snare', 'hat']; // dark → bright
 
 // Fixed per-feature scale for SEMANTIC distances (are two clusters the
@@ -46,22 +47,40 @@ export function analyzeClip(samples, sampleRate) {
 
   const hits = [];
   let clipPeak = 1e-6;
+  let clipRms = 1e-6;
   for (const onset of onsets) {
     const attack = new Float32Array(ATTACK_SAMPLES);
     attack.set(samples.subarray(onset.index, Math.min(onset.index + ATTACK_SAMPLES, samples.length)));
     const features = analyzeHit(attack, sampleRate);
     if (!features) continue;
     if (onset.peak > clipPeak) clipPeak = onset.peak;
-    hits.push({ t: onset.index / sampleRate, peak: onset.peak, features });
+    if (onset.rms > clipRms) clipRms = onset.rms;
+    hits.push({
+      t: onset.index / sampleRate,
+      peak: onset.peak,
+      rms: onset.rms,
+      duration: onset.duration,
+      features,
+    });
   }
   if (!hits.length) return [];
 
   const labels = labelHits(hits);
-  return hits.map((h, i) => ({
-    t: h.t,
-    type: labels[i],
-    velocity: Math.min(1, 0.35 + 0.65 * (h.peak / clipPeak)),
-  }));
+  return hits.map((h, i) => {
+    // Dynamics relative to the take itself, from both peak (attack snap)
+    // and energy (body): ghost notes come out genuinely quiet, accents
+    // genuinely loud, instead of everything landing mid-strength.
+    const loud = 0.55 * (h.peak / clipPeak) + 0.45 * Math.sqrt(h.rms / clipRms);
+    // A long, ringing hit in the hat family is an OPEN hat — duration is
+    // part of the performance too.
+    const type = labels[i] === 'hat' && h.duration >= OPEN_HAT_SEC ? 'openhat' : labels[i];
+    return {
+      t: h.t,
+      type,
+      velocity: Math.min(1, Math.max(0.1, 0.1 + 0.9 * loud)),
+      duration: h.duration,
+    };
+  });
 }
 
 /* ---------- onset detection (context-adaptive) ---------- */
@@ -96,8 +115,10 @@ export function detectOnsets(samples, sampleRate) {
   for (let f = 0; f < nFrames; f++) if (nov[f] > 0) positives.push(nov[f]);
   positives.sort((a, b) => a - b);
   const medianNov = positives.length ? positives[Math.floor(positives.length / 2)] : 0;
-  const novThr = Math.max(medianNov * 3, peakEnv * 0.05);
-  const envThr = Math.max(0.003, peakEnv * 0.07);
+  // slightly hair-triggered so ghost notes make it into the beat — the
+  // clustering downstream is tolerant of the occasional soft extra
+  const novThr = Math.max(medianNov * 3, peakEnv * 0.04);
+  const envThr = Math.max(0.003, peakEnv * 0.055);
 
   const minSepFrames = Math.round((MIN_SEP_SEC * sampleRate) / FRAME);
   const peakWin = Math.round(PEAK_WINDOW_SEC * sampleRate);
@@ -110,17 +131,37 @@ export function detectOnsets(samples, sampleRate) {
 
     const index = Math.max(0, (f - 1) * FRAME);
     let peak = 0;
-    for (let i = index; i < Math.min(index + peakWin, samples.length); i++) {
+    let energy = 0;
+    const end = Math.min(index + peakWin, samples.length);
+    for (let i = index; i < end; i++) {
       const a = samples[i] < 0 ? -samples[i] : samples[i];
       if (a > peak) peak = a;
+      energy += samples[i] * samples[i];
     }
+    const rms = Math.sqrt(energy / Math.max(1, end - index));
 
     const prev = onsets[onsets.length - 1];
     if (prev && f - prev.frame < minSepFrames) {
-      if (nov[f] > prev.nov) onsets[onsets.length - 1] = { frame: f, index, peak, nov: nov[f] };
+      if (nov[f] > prev.nov) onsets[onsets.length - 1] = { frame: f, index, peak, rms, nov: nov[f] };
       continue;
     }
-    onsets.push({ frame: f, index, peak, nov: nov[f] });
+    onsets.push({ frame: f, index, peak, rms, nov: nov[f] });
+  }
+
+  // Decay duration per hit — how long it keeps ringing (open vs closed
+  // hats live here). Measured until the envelope falls well below the
+  // hit's own peak, or the next hit starts.
+  for (let i = 0; i < onsets.length; i++) {
+    const startF = onsets[i].frame;
+    const endF = i + 1 < onsets.length ? onsets[i + 1].frame : nFrames;
+    let hitPeakEnv = 0;
+    for (let f = startF; f < Math.min(startF + 6, endF); f++) {
+      if (env[f] > hitPeakEnv) hitPeakEnv = env[f];
+    }
+    const floor = Math.max(envThr * 0.7, hitPeakEnv * 0.16);
+    let f = startF;
+    while (f < endF && env[f] >= floor) f++;
+    onsets[i].duration = ((f - startF) * FRAME) / sampleRate;
   }
   return onsets;
 }

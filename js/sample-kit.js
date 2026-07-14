@@ -22,6 +22,10 @@ export const REAL_KIT_MANIFEST = {
     boundaries: [0.203, 0.377, 0.569, 0.783],
     files: ['hat_1.wav', 'hat_2.wav', 'hat_3.wav', 'hat_4.wav', 'hat_5.wav'],
   },
+  openhat: {
+    boundaries: [0.203, 0.377, 0.569, 0.783],
+    files: ['openhat_1.wav', 'openhat_2.wav', 'openhat_3.wav', 'openhat_4.wav', 'openhat_5.wav'],
+  },
 };
 
 /** Which velocity layer a hit falls into (0 = softest). Pure, testable. */

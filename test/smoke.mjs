@@ -193,6 +193,39 @@ try {
   check(metrics.meanDiff > 0.0005, `no stereo image: meanDiff ${metrics.meanDiff}`);
   console.log(`✓ produced render: peak ${metrics.peak.toFixed(2)}, rms ${metrics.rms.toFixed(3)}, stereo ✓, no clipping`);
 
+  step = 'A: hi-hat choke';
+  const choke = await pageA.evaluate(async () => {
+    const { renderLoopWav } = await import('./js/recorder.js');
+    const { loadRealKit } = await import('./js/sample-kit.js');
+    const ac = new (window.AudioContext || window.webkitAudioContext)();
+    const kit = await loadRealKit(ac, 'samples/real/');
+    await ac.close();
+    const tailEnergy = (wav) => {
+      const dv = new DataView(wav);
+      const frames = (wav.byteLength - 44) / 4;
+      const from = Math.floor(0.55 * 44100); // open hat still rings here…
+      const to = Math.min(frames, Math.floor(0.95 * 44100));
+      let e = 0;
+      for (let i = from; i < to; i++) {
+        const l = dv.getInt16(44 + i * 4, true) / 32768;
+        const r = dv.getInt16(46 + i * 4, true) / 32768;
+        e += l * l + r * r;
+      }
+      return e;
+    };
+    const open = await renderLoopWav({
+      events: [{ t: 0, type: 'openhat', velocity: 0.9 }],
+      loopDur: 1.2, kit: 'real', sampleKit: kit,
+    });
+    const choked = await renderLoopWav({
+      events: [{ t: 0, type: 'openhat', velocity: 0.9 }, { t: 0.3, type: 'hat', velocity: 0.9 }],
+      loopDur: 1.2, kit: 'real', sampleKit: kit,
+    });
+    return { open: tailEnergy(open), choked: tailEnergy(choked) };
+  });
+  check(choke.open > choke.choked * 3, `choke ineffective: open tail ${choke.open.toFixed(4)} vs choked ${choke.choked.toFixed(4)}`);
+  console.log(`✓ hi-hat choke: ringing tail ${(choke.open / Math.max(choke.choked, 1e-9)).toFixed(1)}× louder unchoked`);
+
   step = 'A: record during playback starts a re-take';
   await pageA.click('#recBtn');
   await waitStatus(pageA, /Recording/);

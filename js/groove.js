@@ -228,8 +228,9 @@ function embellish(clean, { sixteenth, barCount, totalSlots }) {
     for (let s = 0; s < SLOTS_PER_BAR; s += 2) {
       const slot = base + s;
       if (slot >= totalSlots) break;
-      // leave backbeat slots uncluttered; keep played hats as they are
-      if (!has('hat', slot) && !has('snare', slot)) {
+      // leave backbeat slots uncluttered, and never stack a closed hat on
+      // an open one (it would instantly choke the performer's open hat)
+      if (!has('hat', slot) && !has('snare', slot) && !has('openhat', slot)) {
         const accent = s % 4 === 0 ? 1 : 0.72;
         add('hat', slot, Math.min(1, hatVel * accent * (1 + 0.14 * wobble(slot))));
       }

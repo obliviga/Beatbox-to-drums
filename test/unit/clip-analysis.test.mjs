@@ -51,6 +51,8 @@ const snareSig = (rand) => bandSig(rand, 500, 3200, 150, 16);
 // deliberately bright snare variant — the rule tree alone misreads these
 const brightSnareSig = (rand) => bandSig(rand, 1400, 4600, 160, 16);
 const hatSig = (rand) => bandSig(rand, 5500, 12000, 320, 26, 1600);
+// same spectrum as a closed hat but ringing ~0.4 s — an open hat "tsss"
+const openHatSig = (rand) => bandSig(rand, 5500, 12000, 320, 7, 20000);
 
 /** Build a clip: silence + noise floor, hits placed at given times. */
 function buildClip(placed, dur = 4, noise = 0.0015, gain = 1) {
@@ -131,6 +133,33 @@ test('a one-sound take collapses to a single label', () => {
   const events = analyzeClip(buildClip(placed), SR);
   assert.equal(events.length, 4);
   assert.ok(events.every((e) => e.type === 'kick'), JSON.stringify(events.map((e) => e.type)));
+});
+
+test('long ringing hat-family hits become OPEN hats; short ones stay closed', () => {
+  const r = (s) => mulberry32(s);
+  const placed = seq([
+    kickSig(r(71)), hatSig(r(72)), openHatSig(r(73)), hatSig(r(74)),
+    kickSig(r(75)), hatSig(r(76)), openHatSig(r(77)), hatSig(r(78)),
+  ], 0.45);
+  const events = analyzeClip(buildClip(placed, 5), SR);
+  assert.equal(events.length, 8);
+  const expected = ['kick', 'hat', 'openhat', 'hat', 'kick', 'hat', 'openhat', 'hat'];
+  events.forEach((e, i) => assert.equal(e.type, expected[i], `hit ${i}: ${e.type} ≠ ${expected[i]}`));
+  // kicks ring a while too, but only the hat family splits on duration
+  assert.ok(events.every((e, i) => i % 4 !== 0 || e.type === 'kick'));
+});
+
+test('dynamics span a wide range: ghosts are quiet, accents are loud', () => {
+  const r = (s) => mulberry32(s);
+  const placed = [
+    [0.5, kickSig(r(81)), 1.0],
+    [1.0, kickSig(r(82)), 0.15], // ghost note
+    [1.5, kickSig(r(83)), 1.0],
+  ];
+  const events = analyzeClip(buildClip(placed), SR);
+  assert.equal(events.length, 3);
+  assert.ok(events[0].velocity > 0.9, `accent should be near full: ${events[0].velocity}`);
+  assert.ok(events[1].velocity < 0.45, `ghost should be quiet: ${events[1].velocity}`);
 });
 
 test('velocity follows relative loudness within the clip', () => {

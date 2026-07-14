@@ -6,6 +6,8 @@ Beatbox into your phone's microphone and hear yourself as an actual drum kit —
 
 > **Accuracy — context, not training.** When you stop a take, the app analyzes the **whole clip**: onsets are detected with thresholds derived from the clip itself, every hit's spectral features are extracted, and the hits are **clustered against each other** (k-means, merged by instrument-similarity). Your kicks sound like each other far more than they sound like any fixed template — so the clusters are found first, then labeled kick/snare/hat by majority vote with a darkest→kick, brightest→hat ordering. One oddly-pronounced hit gets outvoted by its cluster siblings instead of being misread alone. No training step, no stored profile — every take self-calibrates. The **▶ Original / ▶ Drums** pair lets you A/B what you said against what it heard.
 
+> **Expression carries over.** The conversion keeps the performance, not just the pattern: dynamics come from each hit's peak *and* energy relative to the take's own loudest hit (ghost notes stay whispered, accents smack, and the velocity picks between five real recorded layers per drum), and hit *duration* is captured too — a short “ts” is a closed hat, a long “tsss” becomes a real **open hi-hat**, and the next hat strike chokes it exactly like a pedal would.
+
 Make a **“B”** sound and a kick drum fires. **“Pss”** and you get a snare. **“Ts”** and a hi-hat plays. Record a loop with zero setup — the app detects your tempo by itself and hands the beat back quantized — then switch kits on it and export it as a WAV for your DAW.
 
 ## Features
