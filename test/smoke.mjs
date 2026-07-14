@@ -111,7 +111,9 @@ try {
   }
   check(await pageA.$eval('#playBtn', (el) => el.disabled), 'Drums should start disabled');
   check(await pageA.$eval('#origBtn', (el) => el.disabled), 'Original should start disabled');
-  console.log('✓ minimal UI: Record, waveform, Original, Drums');
+  const versionText = (await pageA.textContent('#versionLine')).trim();
+  check(/v\d+ · \d{4}-\d{2}-\d{2}/.test(versionText), `version line missing/malformed: "${versionText}"`);
+  console.log(`✓ minimal UI: Record, waveform, Original, Drums (${versionText})`);
 
   step = 'A: service worker';
   const swOk = await pageA.evaluate(() => Promise.race([

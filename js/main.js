@@ -20,6 +20,7 @@ import { Timeline } from './timeline.js';
 import { Waveform } from './waveform.js';
 import { loadRealKit } from './sample-kit.js';
 import { analyzeClip } from './clip-analysis.js';
+import { VERSION } from './version.js';
 
 const CAPTURE_SAMPLES = 1024; // keep in sync with js/worklet/onset-processor.js
 const SETTINGS_KEY = 'b2d-settings';
@@ -957,6 +958,9 @@ loadSettings();
 loadProfile();
 updateTransportUI();
 updateRecCount();
+
+const versionLine = document.getElementById('versionLine');
+if (versionLine) versionLine.textContent = `Beatbox → Drums ${VERSION}`;
 
 if ('serviceWorker' in navigator && window.isSecureContext) {
   const register = () => navigator.serviceWorker.register('sw.js').catch(() => { /* offline support is best-effort */ });

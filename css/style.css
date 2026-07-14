@@ -402,3 +402,4 @@ input[type="number"]:disabled { opacity: 0.4; }
 
 .footer { text-align: center; }
 .footer p { margin: 0; color: #565d73; font-size: 0.75rem; }
+.footer .version { margin-top: 4px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.7rem; color: #464c60; }
