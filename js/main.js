@@ -88,6 +88,7 @@ let origUrl = null;
 let rawTakeGain = 1;
 let micReleaseTimer = null;
 let pendingAnalysis = false; // whole-clip analysis runs once the take flushes
+let lastSoundCount = null;   // distinct sound groups the analysis heard
 // Using the mic flips phones into call-mode audio routing (the quiet
 // earpiece speaker). We mark the context "tainted" and rebuild it fresh
 // once the mic is released, so playback returns to the media speaker.
@@ -364,7 +365,8 @@ function finalizeRawTake() {
       // Convert from the WHOLE clip: onsets and drum identities are
       // decided from this take's own context (clustering), so no fixed
       // thresholds or per-user training are involved.
-      const events = analyzeClip(rawTakeBuffer.getChannelData(0), ctx.sampleRate);
+      const { events, sounds } = analyzeClip(rawTakeBuffer.getChannelData(0), ctx.sampleRate);
+      lastSoundCount = sounds;
       recorder.replaceTake(events);
     }
     showTakeSummary();
@@ -810,6 +812,7 @@ function onRecorderState(state) {
     // capture the raw take alongside the detected hits
     rawChunks = [];
     rawTakeBuffer = null;
+    lastSoundCount = null;
     invalidateOriginalUrl();
     if (workletNode) workletNode.port.postMessage({ type: 'stream', on: true });
   }
@@ -869,6 +872,9 @@ function showTakeSummary() {
   let summary;
   if (recorder.grooveSource === 'auto') {
     summary = `Converted ✓ ${recorder.loopBpm} BPM · ${recorder.bars()}-bar drum loop`;
+    // transparency: how many distinct sounds the clip analysis heard —
+    // "1 sound" instantly explains an all-one-drum conversion
+    if (lastSoundCount) summary += ` · heard ${lastSoundCount} sound${lastSoundCount === 1 ? '' : 's'}`;
     const filled = recorder.playableEvents().length - recorder.events.length;
     if (recorder.styleLevel === 'full' && filled > 0) summary += ` · groove +${filled}`;
     if (els.bpmInput) {

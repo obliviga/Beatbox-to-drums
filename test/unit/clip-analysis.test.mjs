@@ -79,7 +79,7 @@ test('a kick/snare/hat take converts with correct times and labels', () => {
     kickSig(r(1)), hatSig(r(2)), snareSig(r(3)), hatSig(r(4)),
     kickSig(r(5)), hatSig(r(6)), snareSig(r(7)), hatSig(r(8)),
   ]);
-  const events = analyzeClip(buildClip(placed), SR);
+  const { events } = analyzeClip(buildClip(placed), SR);
   assert.equal(events.length, 8, `expected 8 hits, got ${events.length}`);
   const expected = ['kick', 'hat', 'snare', 'hat', 'kick', 'hat', 'snare', 'hat'];
   events.forEach((e, i) => {
@@ -92,8 +92,8 @@ test('a kick/snare/hat take converts with correct times and labels', () => {
 test('context adapts: a very quiet recording converts identically', () => {
   const r = (s) => mulberry32(s);
   const placed = seq([kickSig(r(1)), hatSig(r(2)), snareSig(r(3)), hatSig(r(4)), kickSig(r(5)), snareSig(r(6))]);
-  const loud = analyzeClip(buildClip(placed, 4, 0.0015, 1), SR);
-  const quiet = analyzeClip(buildClip(placed, 4, 0.00015, 0.1), SR);
+  const { events: loud } = analyzeClip(buildClip(placed, 4, 0.0015, 1), SR);
+  const { events: quiet } = analyzeClip(buildClip(placed, 4, 0.00015, 0.1), SR);
   assert.equal(quiet.length, loud.length, 'quiet clip should detect the same hits');
   assert.deepEqual(quiet.map((e) => e.type), loud.map((e) => e.type));
 });
@@ -111,7 +111,7 @@ test('THE context test: odd hits are corrected by their cluster siblings', () =>
     kickSig(r(15)), snareSig(r(16)), kickSig(r(17)), brightSnareSig(r(18)),
     kickSig(r(19)), snareSig(r(20)), kickSig(r(21)), snareSig(r(22)),
   ], 0.3);
-  const events = analyzeClip(buildClip(placed, 5), SR);
+  const { events } = analyzeClip(buildClip(placed, 5), SR);
   assert.equal(events.length, 12);
   const expected = ['kick', 'snare'];
   events.forEach((e, i) => {
@@ -122,7 +122,7 @@ test('THE context test: odd hits are corrected by their cluster siblings', () =>
 test('a two-sound take labels both sounds sensibly', () => {
   const r = (s) => mulberry32(s);
   const placed = seq([kickSig(r(31)), hatSig(r(32)), kickSig(r(33)), hatSig(r(34)), kickSig(r(35)), hatSig(r(36))], 0.35);
-  const events = analyzeClip(buildClip(placed), SR);
+  const { events } = analyzeClip(buildClip(placed), SR);
   assert.equal(events.length, 6);
   assert.deepEqual(events.map((e) => e.type), ['kick', 'hat', 'kick', 'hat', 'kick', 'hat']);
 });
@@ -130,7 +130,7 @@ test('a two-sound take labels both sounds sensibly', () => {
 test('a one-sound take collapses to a single label', () => {
   const r = (s) => mulberry32(s);
   const placed = seq([kickSig(r(41)), kickSig(r(42)), kickSig(r(43)), kickSig(r(44))], 0.45);
-  const events = analyzeClip(buildClip(placed), SR);
+  const { events } = analyzeClip(buildClip(placed), SR);
   assert.equal(events.length, 4);
   assert.ok(events.every((e) => e.type === 'kick'), JSON.stringify(events.map((e) => e.type)));
 });
@@ -141,7 +141,7 @@ test('long ringing hat-family hits become OPEN hats; short ones stay closed', ()
     kickSig(r(71)), hatSig(r(72)), openHatSig(r(73)), hatSig(r(74)),
     kickSig(r(75)), hatSig(r(76)), openHatSig(r(77)), hatSig(r(78)),
   ], 0.45);
-  const events = analyzeClip(buildClip(placed, 5), SR);
+  const { events } = analyzeClip(buildClip(placed, 5), SR);
   assert.equal(events.length, 8);
   const expected = ['kick', 'hat', 'openhat', 'hat', 'kick', 'hat', 'openhat', 'hat'];
   events.forEach((e, i) => assert.equal(e.type, expected[i], `hit ${i}: ${e.type} ≠ ${expected[i]}`));
@@ -156,7 +156,7 @@ test('dynamics span a wide range: ghosts are quiet, accents are loud', () => {
     [1.0, kickSig(r(82)), 0.15], // ghost note
     [1.5, kickSig(r(83)), 1.0],
   ];
-  const events = analyzeClip(buildClip(placed), SR);
+  const { events } = analyzeClip(buildClip(placed), SR);
   assert.equal(events.length, 3);
   assert.ok(events[0].velocity > 0.9, `accent should be near full: ${events[0].velocity}`);
   assert.ok(events[1].velocity < 0.45, `ghost should be quiet: ${events[1].velocity}`);
@@ -169,17 +169,75 @@ test('velocity follows relative loudness within the clip', () => {
     [1.0, kickSig(r(52)), 0.35],
     [1.5, kickSig(r(53)), 1.0],
   ];
-  const events = analyzeClip(buildClip(placed), SR);
+  const { events } = analyzeClip(buildClip(placed), SR);
   assert.equal(events.length, 3);
   assert.ok(events[1].velocity < events[0].velocity - 0.15, `soft hit not softer: ${JSON.stringify(events.map((e) => e.velocity))}`);
 });
 
 test('silence and pure noise yield no events', () => {
-  assert.deepEqual(analyzeClip(new Float32Array(SR * 2), SR), []);
+  assert.deepEqual(analyzeClip(new Float32Array(SR * 2), SR), { events: [], sounds: 0 });
   const rand = mulberry32(77);
   const noise = new Float32Array(SR * 2);
   for (let i = 0; i < noise.length; i++) noise[i] = (rand() * 2 - 1) * 0.002;
-  assert.deepEqual(analyzeClip(noise, SR), []);
+  assert.deepEqual(analyzeClip(noise, SR), { events: [], sounds: 0 });
+});
+
+/* ---------- simulated phone-mic voice (the field failure mode) ---------- */
+
+function highpass(sig, fc = 200) {
+  const out = new Float32Array(sig.length);
+  const rc = 1 / (2 * Math.PI * fc);
+  const dt = 1 / SR;
+  const a = rc / (rc + dt);
+  let y = 0;
+  let xPrev = 0;
+  for (let i = 0; i < sig.length; i++) {
+    y = a * (y + sig[i] - xPrev);
+    xPrev = sig[i];
+    out[i] = y;
+  }
+  return out;
+}
+
+function addBreath(sig, rand, amt = 0.05) {
+  const out = sig.slice();
+  let lp = 0;
+  for (let i = 0; i < out.length; i++) {
+    const t = i / SR;
+    lp = lp * 0.7 + (rand() * 2 - 1) * 0.3;
+    out[i] += lp * amt * Math.exp(-t * 10);
+  }
+  return out;
+}
+
+// phone kick: mid-heavy "b" — phone mics keep 200–500 Hz, not the sub
+function phoneKickSig(rand, len = 4000) {
+  const out = new Float32Array(len);
+  let phase = 0;
+  for (let i = 0; i < len; i++) {
+    const t = i / SR;
+    const f = 120 + 260 * Math.exp(-t * 90);
+    phase += (2 * Math.PI * f) / SR;
+    out[i] = 0.8 * Math.sin(phase) * Math.exp(-t * 18);
+    if (i < 90) out[i] += 0.3 * (rand() * 2 - 1);
+  }
+  return out;
+}
+
+const phonify = (sig, rand) => addBreath(highpass(sig), rand);
+
+test('REGRESSION: a phone-mic-style take must NOT collapse into all hats', () => {
+  const r = (s) => mulberry32(s);
+  const ph = (sig, seed) => phonify(sig, mulberry32(seed + 500));
+  const placed = seq([
+    ph(phoneKickSig(r(91)), 91), ph(hatSig(r(92)), 92), ph(snareSig(r(93)), 93), ph(hatSig(r(94)), 94),
+    ph(phoneKickSig(r(95)), 95), ph(hatSig(r(96)), 96), ph(snareSig(r(97)), 97), ph(hatSig(r(98)), 98),
+  ], 0.35);
+  const { events, sounds } = analyzeClip(buildClip(placed, 4), SR);
+  assert.equal(events.length, 8);
+  assert.equal(sounds, 3, `should hear 3 distinct sounds, heard ${sounds}`);
+  const expected = ['kick', 'hat', 'snare', 'hat', 'kick', 'hat', 'snare', 'hat'];
+  events.forEach((e, i) => assert.equal(e.type, expected[i], `hit ${i}: ${e.type} ≠ ${expected[i]}`));
 });
 
 test('detectOnsets enforces minimum separation', () => {

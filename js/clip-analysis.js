@@ -24,34 +24,41 @@
 import { analyzeHit, classifyHit, featureVector } from './classifier.js';
 
 const FRAME = 128;               // envelope hop (~2.7 ms @ 48 kHz)
-const ATTACK_SAMPLES = 1024;     // same window the live path classifies on
+// Feature window: 43 ms of BODY, not just the attack. Through a phone mic
+// the first 20 ms of every mouth sound is broadband pop/hiss — a kick only
+// reveals itself once its body develops. Offline analysis can afford this.
+const BODY_SAMPLES = 2048;
+const LOW_WINDOW_SEC = 0.08;     // bass-ratio measurement window (80 ms)
 const MIN_SEP_SEC = 0.09;        // two hits can't be closer than this
 const PEAK_WINDOW_SEC = 0.06;    // where a hit's peak/energy (velocity) is measured
 const OPEN_HAT_SEC = 0.18;       // hat-cluster hits ringing at least this long are open hats
 const LABEL_ORDER = ['kick', 'snare', 'hat']; // dark → bright
 
 // Fixed per-feature scale for SEMANTIC distances (are two clusters the
-// same instrument?). Measured on synthesized voices: variants of one
-// instrument land ≤ ~0.9 apart, different instruments ≥ ~2.0.
-const FEATURE_SCALE = [1500, 0.15, 0.25, 0.3, 0.25, 0.25, 3000];
+// same instrument?). Re-measured with the body-window + bass-ratio
+// features on clean AND simulated phone-mic voices: variants of one
+// instrument land ≤ ~0.8 apart, different instruments ≥ ~1.9 — including
+// the high-passed, breathy phone case that used to collapse.
+const FEATURE_SCALE = [1500, 0.15, 0.25, 0.3, 0.25, 0.25, 3000, 0.25];
 const MERGE_DIST_FIXED = 1.3;
 
 /**
  * @param {Float32Array} samples — the whole take, mono
  * @param {number} sampleRate
- * @returns {{t:number, type:'kick'|'snare'|'hat', velocity:number}[]}
+ * @returns {{events: {t:number, type:string, velocity:number, duration:number}[],
+ *            sounds: number}} — sounds = distinct sound groups heard
  */
 export function analyzeClip(samples, sampleRate) {
   const onsets = detectOnsets(samples, sampleRate);
-  if (!onsets.length) return [];
+  if (!onsets.length) return { events: [], sounds: 0 };
 
   const hits = [];
   let clipPeak = 1e-6;
   let clipRms = 1e-6;
   for (const onset of onsets) {
-    const attack = new Float32Array(ATTACK_SAMPLES);
-    attack.set(samples.subarray(onset.index, Math.min(onset.index + ATTACK_SAMPLES, samples.length)));
-    const features = analyzeHit(attack, sampleRate);
+    const body = new Float32Array(BODY_SAMPLES);
+    body.set(samples.subarray(onset.index, Math.min(onset.index + BODY_SAMPLES, samples.length)));
+    const features = analyzeHit(body, sampleRate);
     if (!features) continue;
     if (onset.peak > clipPeak) clipPeak = onset.peak;
     if (onset.rms > clipRms) clipRms = onset.rms;
@@ -61,12 +68,13 @@ export function analyzeClip(samples, sampleRate) {
       rms: onset.rms,
       duration: onset.duration,
       features,
+      low80: lowBandRatio(samples, onset.index, sampleRate),
     });
   }
-  if (!hits.length) return [];
+  if (!hits.length) return { events: [], sounds: 0 };
 
-  const labels = labelHits(hits);
-  return hits.map((h, i) => {
+  const { labels, sounds } = labelHits(hits);
+  const events = hits.map((h, i) => {
     // Dynamics relative to the take itself, from both peak (attack snap)
     // and energy (body): ghost notes come out genuinely quiet, accents
     // genuinely loud, instead of everything landing mid-strength.
@@ -81,6 +89,27 @@ export function analyzeClip(samples, sampleRate) {
       duration: h.duration,
     };
   });
+  return { events, sounds };
+}
+
+/**
+ * Bass ratio over the hit's first 80 ms: energy below ~250 Hz (one-pole
+ * lowpass) vs total. A strong kick discriminator even through phone mics,
+ * because it looks past the attack transient into the body of the sound.
+ */
+export function lowBandRatio(samples, index, sampleRate) {
+  const n = Math.min(Math.round(LOW_WINDOW_SEC * sampleRate), samples.length - index);
+  if (n <= 0) return 0;
+  const a = 1 - Math.exp((-2 * Math.PI * 250) / sampleRate);
+  let y = 0;
+  let lowE = 0;
+  let totE = 0;
+  for (let i = index; i < index + n; i++) {
+    y += a * (samples[i] - y);
+    lowE += y * y;
+    totE += samples[i] * samples[i];
+  }
+  return totE > 1e-12 ? lowE / totE : 0;
 }
 
 /* ---------- onset detection (context-adaptive) ---------- */
@@ -170,14 +199,16 @@ export function detectOnsets(samples, sampleRate) {
 
 function labelHits(hits) {
   if (hits.length === 1) {
-    return [classifyHit(hits[0].features) || 'snare'];
+    return { labels: [classifyHit(hits[0].features) || 'snare'], sounds: 1 };
   }
 
   // Two spaces, two jobs:
   //  z-space (per-clip standardized) → clustering geometry that adapts to
   //    any voice, however compressed its feature range is;
   //  fixed scale → semantic "same instrument?" distances for merging.
-  const vecs = hits.map((h) => featureVector(h.features));
+  // The vector is the spectral profile of the hit's BODY plus the 80 ms
+  // bass ratio — evidence that survives phone-mic bass rolloff.
+  const vecs = hits.map((h) => [...featureVector(h.features), h.low80 || 0]);
   const fixed = vecs.map((v) => v.map((x, d) => x / FEATURE_SCALE[d]));
   const dims = vecs[0].length;
   const mean = new Array(dims).fill(0);
@@ -212,9 +243,11 @@ function labelHits(hits) {
     }
     for (const key of Object.keys(meanF)) meanF[key] /= c.members.length;
     c.meanF = meanF;
+    c.low80 = c.members.reduce((s, i) => s + (hits[i].low80 || 0), 0) / c.members.length;
     c.vote = Object.entries(votes).sort((a, b) => b[1] - a[1])[0]?.[0]
       || classifyHit(meanF) || 'snare';
-    c.bright = meanF.centroid / 1000 + meanF.rolloff / 3000 + meanF.zcr * 8 - meanF.low * 6;
+    c.bright = meanF.centroid / 1000 + meanF.rolloff / 3000 + meanF.zcr * 8
+      - meanF.low * 6 - c.low80 * 8;
   }
 
   // Labels must ascend with brightness (a brighter cluster never gets a
@@ -243,7 +276,7 @@ function labelHits(hits) {
   }
 
   const byId = new Map(clusters.map((c) => [c.id, c.label]));
-  return assignment.map((id) => byId.get(id));
+  return { labels: assignment.map((id) => byId.get(id)), sounds: clusters.length };
 }
 
 /** Deterministic k-means (k-means++ init from seeded PRNG, best of 3 runs). */
