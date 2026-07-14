@@ -47,9 +47,9 @@ function bandSig(rand, f0, f1, step, decay, len = 2500) {
   return out;
 }
 
-const snareSig = (rand) => bandSig(rand, 500, 3200, 150, 16);
+const snareSig = (rand) => bandSig(rand, 500, 3200, 150, 16, 6000);
 // deliberately bright snare variant — the rule tree alone misreads these
-const brightSnareSig = (rand) => bandSig(rand, 1400, 4600, 160, 16);
+const brightSnareSig = (rand) => bandSig(rand, 1400, 4600, 160, 16, 6000);
 const hatSig = (rand) => bandSig(rand, 5500, 12000, 320, 26, 1600);
 // same spectrum as a closed hat but ringing ~0.4 s — an open hat "tsss"
 const openHatSig = (rand) => bandSig(rand, 5500, 12000, 320, 7, 20000);
@@ -195,6 +195,65 @@ test('silence and pure noise yield no events', () => {
   const noise = new Float32Array(SR * 2);
   for (let i = 0; i < noise.length; i++) noise[i] = (rand() * 2 - 1) * 0.002;
   assert.deepEqual(analyzeClip(noise, SR), { events: [], sounds: 0 });
+});
+
+/* ---------- expanded vocabulary: toms, rimshot, crash ---------- */
+
+// tonal low-mid "duh" — a tom: pitched well above a kick, below a snare
+function tomSig(rand, len = 5000) {
+  const out = new Float32Array(len);
+  let phase = 0;
+  for (let i = 0; i < len; i++) {
+    const t = i / SR;
+    const f = 165 + 25 * Math.exp(-t * 60);
+    phase += (2 * Math.PI * f) / SR;
+    out[i] = 0.75 * Math.sin(phase) * Math.exp(-t * 11);
+    if (i < 40) out[i] += 0.12 * (rand() * 2 - 1);
+  }
+  return out;
+}
+// short mid-band click "k" — a rimshot
+const rimSig = (rand) => bandSig(rand, 1200, 3800, 200, 60, 2000);
+// very long bright wash — a crash
+const crashSig = (rand) => bandSig(rand, 4500, 11000, 250, 3, 42000);
+
+test('five distinct sounds become five instruments (not a forced three)', () => {
+  const r = (s) => mulberry32(s);
+  const placed = seq([
+    kickSig(r(201)), tomSig(r(202)), snareSig(r(203)), rimSig(r(204)), hatSig(r(205)),
+    kickSig(r(206)), tomSig(r(207)), snareSig(r(208)), rimSig(r(209)), hatSig(r(210)),
+    kickSig(r(211)), tomSig(r(212)), snareSig(r(213)), rimSig(r(214)), hatSig(r(215)),
+  ], 0.32);
+  const { events, sounds } = analyzeClip(buildClip(placed, 6), SR);
+  assert.equal(events.length, 15);
+  assert.equal(sounds, 5, `should hear 5 distinct sounds, heard ${sounds}`);
+  const expected = ['kick', 'tom', 'snare', 'rimshot', 'hat'];
+  events.forEach((e, i) => assert.equal(e.type, expected[i % 5], `hit ${i}: ${e.type} ≠ ${expected[i % 5]}`));
+});
+
+test('kicks and toms stay separate instruments (low-pitch cue)', () => {
+  const r = (s) => mulberry32(s);
+  const placed = seq([
+    kickSig(r(221)), tomSig(r(222)), kickSig(r(223)), tomSig(r(224)),
+    kickSig(r(225)), tomSig(r(226)), kickSig(r(227)), tomSig(r(228)),
+  ], 0.4);
+  const { events, sounds } = analyzeClip(buildClip(placed, 4), SR);
+  assert.equal(sounds, 2, `kick and tom must not merge (heard ${sounds})`);
+  const expected = ['kick', 'tom'];
+  events.forEach((e, i) => assert.equal(e.type, expected[i % 2], `hit ${i}: ${e.type}`));
+});
+
+test('a very long bright wash becomes a crash', () => {
+  const r = (s) => mulberry32(s);
+  const placed = [
+    [0.5, kickSig(r(231))], [1.0, hatSig(r(232))], [1.5, kickSig(r(233))],
+    [2.0, crashSig(r(234))], [3.2, kickSig(r(235))], [3.7, hatSig(r(236))],
+  ];
+  const { events } = analyzeClip(buildClip(placed, 5), SR);
+  assert.equal(events.length, 6);
+  assert.equal(events[3].type, 'crash', `long wash should be crash, got ${events[3].type}`);
+  assert.equal(events[1].type, 'hat');
+  assert.equal(events[5].type, 'hat');
 });
 
 /* ---------- simulated phone-mic voice (the field failure mode) ---------- */

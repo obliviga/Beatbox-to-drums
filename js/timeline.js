@@ -3,10 +3,16 @@
  * a dot per hit (sized by velocity), optional beat grid, and a playhead.
  */
 
-const LANES = ['hat', 'snare', 'kick'];
-const LANE_COLORS = { kick: '#ff5d5d', snare: '#4dd6c1', hat: '#ffc24d', openhat: '#ffd98a' };
-// open hats share the hat lane
-const LANE_OF = { kick: 'kick', snare: 'snare', hat: 'hat', openhat: 'hat' };
+const LANES = ['hat', 'snare', 'tom', 'kick'];
+const LANE_COLORS = {
+  kick: '#ff5d5d', snare: '#4dd6c1', hat: '#ffc24d', openhat: '#ffd98a',
+  tom: '#c48cff', tomfloor: '#a06cf5', rimshot: '#7fe8d8', crash: '#fff0b0',
+};
+// articulations share their instrument's lane
+const LANE_OF = {
+  kick: 'kick', snare: 'snare', hat: 'hat', openhat: 'hat', crash: 'hat',
+  tom: 'tom', tomfloor: 'tom', rimshot: 'snare',
+};
 
 export class Timeline {
   constructor(canvas) {

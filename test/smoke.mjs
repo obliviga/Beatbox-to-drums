@@ -105,14 +105,15 @@ try {
   await pageA.waitForTimeout(300);
 
   step = 'A: minimal UI';
-  for (const sel of ['#micBtn', '.pad', '.chip', '#bpmInput', '#exportBtn', '#timeline', '#debugChk', '#tuneBtn']) {
+  for (const sel of ['#micBtn', '.pad', '.chip', '#bpmInput', '#exportBtn', '#debugChk', '#tuneBtn']) {
     check((await pageA.$(sel)) === null, `${sel} should be hidden in the minimal UI`);
   }
-  for (const sel of ['#recBtn', '#origBtn', '#playBtn', '#waveform']) {
+  for (const sel of ['#recBtn', '#origBtn', '#playBtn', '#waveform', '#timeline']) {
     check((await pageA.$(sel)) !== null, `${sel} missing`);
   }
   check(await pageA.$eval('#playBtn', (el) => el.disabled), 'Drums should start disabled');
   check(await pageA.$eval('#origBtn', (el) => el.disabled), 'Original should start disabled');
+  check(await pageA.$eval('#mapWrap', (el) => el.hidden), 'beat map should start hidden');
   const versionText = (await pageA.textContent('#versionLine')).trim();
   check(/v\d+ · \d{4}-\d{2}-\d{2}/.test(versionText), `version line missing/malformed: "${versionText}"`);
   console.log(`✓ minimal UI: Record, waveform, Original, Drums (${versionText})`);
@@ -138,6 +139,7 @@ try {
   await pageA.click('#recBtn');
   await waitStatus(pageA, /(Converted ✓|Captured \d+ hit).*▶ Drums/);
   check(!(await pageA.$eval('#playBtn', (el) => el.disabled)), 'Drums should be enabled after a take');
+  check(!(await pageA.$eval('#mapWrap', (el) => el.hidden)), 'beat map should be visible after a take');
   console.log(`✓ stop converts and hands off ("${await statusOf(pageA)}")`);
 
   step = 'A: play back the original recording';
@@ -157,7 +159,7 @@ try {
   step = 'A: real drum samples loaded';
   const sampleCount = await pageA.evaluate(() =>
     performance.getEntriesByType('resource').filter((e) => e.name.includes('/samples/real/')).length);
-  check(sampleCount >= 15, `only ${sampleCount} sample fetches observed`);
+  check(sampleCount >= 40, `only ${sampleCount} sample fetches observed`);
   console.log(`✓ real sampled kit loaded (${sampleCount} sample files fetched)`);
 
   step = 'A: production-chain render fidelity';

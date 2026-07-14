@@ -1,8 +1,9 @@
 # Drum sample attribution
 
-The WAV files in this directory are the kick, snare, closed hi-hat, and
-open hi-hat velocity layers of **GMRockKit**, the acoustic rock drum kit
-that ships with the [Hydrogen drum machine](https://github.com/hydrogen-music/hydrogen)
+The WAV files in this directory are the kick, snare, closed hi-hat,
+open hi-hat, rack tom, floor tom, rimshot, and crash velocity layers of
+**GMRockKit**, the acoustic rock drum kit that ships with the
+[Hydrogen drum machine](https://github.com/hydrogen-music/hydrogen)
 (`data/drumkits/GMRockKit/`).
 
 - **Recorded by:** Glen MacArthur ([AVL Drumkits](https://x42-plugins.com/x42/x42-avldrums)) / Sebastian Moors
@@ -10,7 +11,8 @@ that ships with the [Hydrogen drum machine](https://github.com/hydrogen-music/hy
 - **Modifications:** none — files are renamed only
   (`Kick-Softest.wav` → `kick_1.wav` … `Kick-Hardest.wav` → `kick_5.wav`,
   and likewise for `Snare-*` → `snare_*`, `HatClosed-*` → `hat_*`,
-  and `HatOpen-*` → `openhat_*`).
+  `HatOpen-*` → `openhat_*`, `Tom2-*` → `tom_*`, `TomFloor-*` →
+  `tomfloor_*`, `SnareRimshot-*` → `rimshot_*`, and `Crash-*` → `crash_*`).
 
 These samples are distributed alongside this application as a mere
 aggregation; the GPL applies to the sample files themselves. The original,

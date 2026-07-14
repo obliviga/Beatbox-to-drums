@@ -45,6 +45,7 @@ const els = {
   clearBtn: document.getElementById('clearBtn'),
   exportBtn: document.getElementById('exportBtn'),
   recCount: document.getElementById('recCount'),
+  mapWrap: document.getElementById('mapWrap'),
   timelineCanvas: document.getElementById('timeline'),
   waveformCanvas: document.getElementById('waveform'),
   debugChk: document.getElementById('debugChk'),
@@ -873,9 +874,18 @@ function showTakeSummary() {
   let summary;
   if (recorder.grooveSource === 'auto') {
     summary = `Converted ✓ ${recorder.loopBpm} BPM · ${recorder.bars()}-bar drum loop`;
-    // transparency: how many distinct sounds the clip analysis heard —
-    // "1 sound" instantly explains an all-one-drum conversion
-    if (lastSoundCount) summary += ` · heard ${lastSoundCount} sound${lastSoundCount === 1 ? '' : 's'}`;
+    // transparency: how many distinct sounds the clip analysis heard and
+    // what they became — "1 sound" instantly explains an all-one-drum take
+    if (lastSoundCount) {
+      const ORDER = ['kick', 'tomfloor', 'tom', 'snare', 'rimshot', 'hat', 'openhat', 'crash'];
+      const NICE = {
+        kick: 'kick', tomfloor: 'floor tom', tom: 'tom', snare: 'snare',
+        rimshot: 'rim', hat: 'hats', openhat: 'open', crash: 'crash',
+      };
+      const used = ORDER.filter((t) => recorder.events.some((e) => e.type === t)).map((t) => NICE[t]);
+      summary += ` · heard ${lastSoundCount} sound${lastSoundCount === 1 ? '' : 's'}`;
+      if (used.length) summary += ` → ${used.join(' · ')}`;
+    }
     const filled = recorder.playableEvents().length - recorder.events.length;
     if (recorder.styleLevel === 'full' && filled > 0) summary += ` · groove +${filled}`;
     if (els.bpmInput) {
@@ -956,6 +966,8 @@ function updateTransportUI() {
   if (els.exportBtn) els.exportBtn.disabled = state !== 'idle' || !hasEvents;
   if (els.bpmInput) els.bpmInput.disabled = state !== 'idle';
   if (els.metChk) els.metChk.disabled = state !== 'idle';
+  // the beat map appears once there's a take to show
+  if (els.mapWrap) els.mapWrap.hidden = !hasEvents && state !== 'recording' && state !== 'armed';
 }
 
 /* ---------- keyboard shortcuts (desktop) ---------- */

@@ -20,19 +20,28 @@ import { layerIndex } from './sample-kit.js';
 export const KIT_NAMES = ['real', 'acoustic', 'tr808', 'trap', 'electro', 'lofi', 'perc'];
 
 // Subtle stereo placement per instrument, like sitting at a kit
-const PAN = { kick: 0, snare: -0.08, hat: 0.14, openhat: 0.14 };
+const PAN = {
+  kick: 0, snare: -0.08, hat: 0.14, openhat: 0.14,
+  tom: 0.08, tomfloor: -0.16, rimshot: -0.08, crash: -0.2,
+};
 
 // How much of each drum feeds the shared room reverb — the "recorded
 // together in one room" glue. Kick stays tight, snare blooms most.
-const REVERB_SEND = { kick: 0.07, snare: 0.22, hat: 0.1, openhat: 0.13 };
+const REVERB_SEND = {
+  kick: 0.07, snare: 0.22, hat: 0.1, openhat: 0.13,
+  tom: 0.16, tomfloor: 0.16, rimshot: 0.18, crash: 0.2,
+};
+
+// while samples are still loading, synth kits stand in for the full palette
+const SYNTH_FALLBACK = { openhat: 'hat', crash: 'hat', tom: 'snare', tomfloor: 'kick', rimshot: 'snare' };
 
 export class DrumEngine {
   constructor(ctx) {
     this.ctx = ctx;
     this.kit = 'acoustic';
     this.scheduled = new Set();
-    this.sampleKits = {};   // name → {kick|snare|hat|openhat: {boundaries, buffers}}
-    this._rrPhase = { kick: 0, snare: 0, hat: 0, openhat: 0 }; // humanization counter
+    this.sampleKits = {};   // name → {drum: {boundaries, buffers}}
+    this._rrPhase = {};     // per-drum humanization counters
     this._ringingOpenHat = null; // {gain, when} — choked by the next hat
 
     /*
@@ -112,9 +121,9 @@ export class DrumEngine {
       sources = this._playSample(sampleKit[type], type, when, v);
     } else {
       // synth voice — also the fallback while the 'real' kit is loading;
-      // synth kits have no open hat, so it borrows the closed one
+      // synth kits cover the extended palette with their nearest voices
       const kitDef = KITS[this.kit] || KITS.acoustic;
-      const voice = kitDef[type] || (type === 'openhat' ? kitDef.hat : null);
+      const voice = kitDef[type] || kitDef[SYNTH_FALLBACK[type]];
       if (!voice) return;
       sources = voice(this.ctx, this._outputFor(type), this.noiseBuf, when, v);
     }
@@ -131,7 +140,7 @@ export class DrumEngine {
     src.buffer = drum.buffers[Math.min(layerIndex(drum.boundaries, v), drum.buffers.length - 1)];
     // Humanize: alternate tiny detunes so fast rolls never repeat a
     // bit-identical file (the kit has one recording per layer).
-    const phase = this._rrPhase[type] = (this._rrPhase[type] + 1) % 4;
+    const phase = this._rrPhase[type] = ((this._rrPhase[type] || 0) + 1) % 4;
     src.playbackRate.value = 1 + (phase - 1.5) * 0.01; // ±1.5%
     const gain = this.ctx.createGain();
     // layers carry the timbre; a gentle gain slope smooths steps between them

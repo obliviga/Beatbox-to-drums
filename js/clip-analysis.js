@@ -38,15 +38,32 @@ const PEAK_WINDOW_SEC = 0.06;    // where a hit's peak/energy (velocity) is meas
 const OPEN_HAT_SEC = 0.15;
 const OPEN_HAT_GAP_FRAC = 0.45;  // ringing through 45%+ of the gap to the next hit
 const OPEN_HAT_MIN_GAP = 0.18;   // …but never for rapid closed-hat runs
-const LABEL_ORDER = ['kick', 'snare', 'hat']; // dark → bright
 
 // Fixed per-feature scale for SEMANTIC distances (are two clusters the
 // same instrument?). Re-measured with the body-window + bass-ratio
 // features on clean AND simulated phone-mic voices: variants of one
 // instrument land ≤ ~0.8 apart, different instruments ≥ ~1.9 — including
 // the high-passed, breathy phone case that used to collapse.
-const FEATURE_SCALE = [1500, 0.15, 0.25, 0.3, 0.25, 0.25, 3000, 0.25];
-const MERGE_DIST_FIXED = 1.3;
+// Dims: [centroid, zcr, low, mid, high, flatness, rolloff, low80,
+//        lowPitch, duration]
+// lowPitch = low-band zero-crossing rate (amplitude-gated, bass-gated) —
+// the fundamental that separates kicks (~60–90 Hz) from toms (~150–250 Hz).
+// duration separates short clicks (rimshots) from ringing sounds.
+const FEATURE_SCALE = [1500, 0.15, 0.25, 0.3, 0.25, 0.25, 3000, 0.25, 0.0015, 0.05];
+const MERGE_DIST_FIXED = 1.3; // mean scaled distance to merge two clusters
+// Categorical cues where a hard single-dimension difference means a
+// DIFFERENT drum even when the spectra agree: low pitch (kick vs tom)
+// and ring length (rimshot vs snare). Spectral dims are exempt because
+// variants of one instrument legitimately vary there.
+const MERGE_VETO_DIMS = [8, 9];
+const MERGE_VETO_LIMIT = 1.2;
+
+// How many distinct sounds the clustering may discover. The actual count
+// is chosen by the data (silhouette score), not fixed.
+const MAX_SOUNDS = 6;
+const MIN_SILHOUETTE = 0.3; // below this, the take is one repeated sound
+
+const CRASH_SEC = 0.45; // hat-family hits ringing this long are crashes
 
 /**
  * @param {Float32Array} samples — the whole take, mono
@@ -68,13 +85,15 @@ export function analyzeClip(samples, sampleRate) {
     if (!features) continue;
     if (onset.peak > clipPeak) clipPeak = onset.peak;
     if (onset.rms > clipRms) clipRms = onset.rms;
+    const lowFeats = lowBandFeatures(samples, onset.index, sampleRate);
     hits.push({
       t: onset.index / sampleRate,
       peak: onset.peak,
       rms: onset.rms,
       duration: onset.duration,
       features,
-      low80: lowBandRatio(samples, onset.index, sampleRate),
+      low80: lowFeats.ratio,
+      lowZcr: lowFeats.zcr,
     });
   }
   if (!hits.length) return { events: [], sounds: 0 };
@@ -85,12 +104,16 @@ export function analyzeClip(samples, sampleRate) {
     // and energy (body): ghost notes come out genuinely quiet, accents
     // genuinely loud, instead of everything landing mid-strength.
     const loud = 0.55 * (h.peak / clipPeak) + 0.45 * Math.sqrt(h.rms / clipRms);
-    // A ringing hit in the hat family is an OPEN hat — either long in
-    // absolute terms, or still sounding when the next hit arrives.
+    // Hat-family articulation from ring length: a very long ring is a
+    // CRASH; a hit still sounding when the next arrives is an OPEN hat.
     const gap = i + 1 < hits.length ? hits[i + 1].t - h.t : Infinity;
     const rings = h.duration >= OPEN_HAT_SEC
       || (gap >= OPEN_HAT_MIN_GAP && h.duration >= OPEN_HAT_GAP_FRAC * Math.min(gap, 0.5));
-    const type = labels[i] === 'hat' && rings ? 'openhat' : labels[i];
+    let type = labels[i];
+    if (type === 'hat') {
+      if (h.duration >= CRASH_SEC) type = 'crash';
+      else if (rings) type = 'openhat';
+    }
     return {
       t: h.t,
       type,
@@ -102,23 +125,51 @@ export function analyzeClip(samples, sampleRate) {
 }
 
 /**
- * Bass ratio over the hit's first 80 ms: energy below ~250 Hz (one-pole
- * lowpass) vs total. A strong kick discriminator even through phone mics,
- * because it looks past the attack transient into the body of the sound.
+ * Low-band features over the hit's first 80 ms, from a one-pole ~250 Hz
+ * lowpass: `ratio` = low energy / total (kick vs everything, even through
+ * phone mics), and `zcr` = zero-crossing rate of the lowpassed signal —
+ * effectively the PITCH of the low band, which separates kicks (~60–90 Hz)
+ * from toms (~150–250 Hz).
  */
-export function lowBandRatio(samples, index, sampleRate) {
+export function lowBandFeatures(samples, index, sampleRate) {
   const n = Math.min(Math.round(LOW_WINDOW_SEC * sampleRate), samples.length - index);
-  if (n <= 0) return 0;
+  if (n <= 0) return { ratio: 0, zcr: 0 };
   const a = 1 - Math.exp((-2 * Math.PI * 250) / sampleRate);
+  // pass 1: lowpass, energies, and the low-band peak for the gate
+  const low = new Float32Array(n);
   let y = 0;
   let lowE = 0;
   let totE = 0;
-  for (let i = index; i < index + n; i++) {
-    y += a * (samples[i] - y);
+  let lowPeak = 0;
+  for (let i = 0; i < n; i++) {
+    y += a * (samples[index + i] - y);
+    low[i] = y;
     lowE += y * y;
-    totE += samples[i] * samples[i];
+    totE += samples[index + i] * samples[index + i];
+    const ay = y < 0 ? -y : y;
+    if (ay > lowPeak) lowPeak = ay;
   }
-  return totE > 1e-12 ? lowE / totE : 0;
+  // pass 2: crossings counted only while the low band is actually
+  // sounding — after the attack (click/pop) and while the local ENVELOPE
+  // is above the gate (instantaneous amplitude is ~0 at every crossing,
+  // so gating on it would skip exactly the samples we're counting)
+  const skip = Math.min(Math.round(0.008 * sampleRate), n - 1);
+  const gate = lowPeak * 0.15;
+  const envA = 1 - Math.exp(-1 / (0.005 * sampleRate));
+  let envY = 0;
+  let crossings = 0;
+  let counted = 0;
+  for (let i = 1; i < n; i++) {
+    const ay = low[i] < 0 ? -low[i] : low[i];
+    envY += envA * (ay - envY);
+    if (i <= skip || envY < gate) continue;
+    counted++;
+    if ((low[i - 1] < 0) !== (low[i] < 0)) crossings++;
+  }
+  return {
+    ratio: totE > 1e-12 ? lowE / totE : 0,
+    zcr: counted > 0 ? crossings / counted : 0,
+  };
 }
 
 /* ---------- onset detection (context-adaptive) ---------- */
@@ -219,7 +270,12 @@ function labelHits(hits) {
   //  fixed scale → semantic "same instrument?" distances for merging.
   // The vector is the spectral profile of the hit's BODY plus the 80 ms
   // bass ratio — evidence that survives phone-mic bass rolloff.
-  const vecs = hits.map((h) => [...featureVector(h.features), h.low80 || 0]);
+  // lowPitch only exists for genuinely bass-carrying sounds; for
+  // everything else it's 0 so it can neither split nor block merging
+  const lowPitch = (h) => ((h.low80 || 0) >= 0.2 ? h.lowZcr || 0 : 0);
+  const vecs = hits.map((h) => [
+    ...featureVector(h.features), h.low80 || 0, lowPitch(h), h.duration || 0,
+  ]);
   const fixed = vecs.map((v) => v.map((x, d) => x / FEATURE_SCALE[d]));
   const dims = vecs[0].length;
   const mean = new Array(dims).fill(0);
@@ -230,8 +286,21 @@ function labelHits(hits) {
   for (let d = 0; d < dims; d++) std[d] = Math.max(Math.sqrt(std[d] / vecs.length), 1e-6);
   const z = vecs.map((v) => v.map((x, d) => (x - mean[d]) / std[d]));
 
-  const k = Math.min(3, hits.length);
-  let assignment = kmeans(z, k);
+  // How many distinct sounds did this person actually make? Try every
+  // cluster count and let the silhouette score decide — a beatboxer using
+  // five different mouth sounds gets five clusters, not a forced three.
+  const maxK = Math.min(MAX_SOUNDS, hits.length - 1);
+  let assignment = hits.map(() => 0);
+  let bestSil = -1;
+  for (let k = 2; k <= maxK; k++) {
+    const cand = kmeans(z, k);
+    const sil = silhouette(z, cand);
+    if (sil > bestSil + 1e-9) {
+      bestSil = sil;
+      assignment = cand;
+    }
+  }
+  if (bestSil < MIN_SILHOUETTE) assignment = hits.map(() => 0); // one repeated sound
   assignment = mergeCloseClusters(fixed, assignment);
 
   // group members per cluster
@@ -242,7 +311,7 @@ function labelHits(hits) {
     return { id, members };
   });
 
-  // majority rule-tree vote per cluster, mean features for brightness
+  // per-cluster profile: rule-tree votes, mean features, bass, ring, click
   for (const c of clusters) {
     const votes = {};
     const meanF = { centroid: 0, zcr: 0, low: 0, mid: 0, high: 0, flatness: 0, rolloff: 0 };
@@ -255,39 +324,96 @@ function labelHits(hits) {
     for (const key of Object.keys(meanF)) meanF[key] /= c.members.length;
     c.meanF = meanF;
     c.low80 = c.members.reduce((s, i) => s + (hits[i].low80 || 0), 0) / c.members.length;
+    c.lowZcr = c.members.reduce((s, i) => s + (hits[i].lowZcr || 0), 0) / c.members.length;
+    c.durMean = c.members.reduce((s, i) => s + (hits[i].duration || 0), 0) / c.members.length;
     c.vote = Object.entries(votes).sort((a, b) => b[1] - a[1])[0]?.[0]
       || classifyHit(meanF) || 'snare';
     c.bright = meanF.centroid / 1000 + meanF.rolloff / 3000 + meanF.zcr * 8
       - meanF.low * 6 - c.low80 * 8;
   }
 
-  // Labels must ascend with brightness (a brighter cluster never gets a
-  // darker drum than a darker cluster):
-  //  3 clusters → forced kick/snare/hat by brightness;
-  //  2 clusters → best rank-ascending pair, votes first;
-  //  1 cluster → its vote.
-  clusters.sort((a, b) => a.bright - b.bright);
-  if (clusters.length === 3) {
-    clusters.forEach((c, i) => { c.label = LABEL_ORDER[i]; });
-  } else if (clusters.length === 2) {
-    const pairs = [['kick', 'snare'], ['kick', 'hat'], ['snare', 'hat']];
-    let best = pairs[0];
-    let bestScore = -Infinity;
-    for (const pair of pairs) {
-      let score = 0;
-      pair.forEach((label, i) => {
-        if (label === clusters[i].vote) score += 10;
-        score -= Math.abs(LABEL_ORDER.indexOf(label) - i);
-      });
-      if (score > bestScore) { bestScore = score; best = pair; }
-    }
-    clusters.forEach((c, i) => { c.label = best[i]; });
-  } else {
-    clusters[0].label = clusters[0].vote;
-  }
+  assignLabels(clusters);
 
   const byId = new Map(clusters.map((c) => [c.id, c.label]));
   return { labels: assignment.map((id) => byId.get(id)), sounds: clusters.length };
+}
+
+/**
+ * Map sound clusters to the kit. Decisions are relative-first (this
+ * take's darkest bass sound is the kick, its brightest noise is the
+ * hats), with instrument character deciding the middle ground:
+ * tonal & low → toms, short clicky → rimshot, broadband → snare.
+ */
+function assignLabels(clusters) {
+  clusters.sort((a, b) => a.bright - b.bright);
+  const n = clusters.length;
+  if (n === 1) {
+    clusters[0].label = clusters[0].vote;
+    return;
+  }
+
+  // brightest = the hat family (per-hit ring splits closed/open/crash) —
+  // but only if it's genuinely bright/noisy; a kick+tom take has no hats
+  const top = clusters[n - 1];
+  if (top.meanF.centroid >= 2500 || top.meanF.zcr >= 0.18 || top.vote === 'hat') {
+    top.label = 'hat';
+  }
+
+  // darkest = kick, if it's genuinely bass-heavy — absolutely, or clearly
+  // relative to everything else (phone mics kill absolute bass)
+  const dark = clusters[0];
+  const otherLow = clusters.slice(1).map((c) => c.low80).sort((a, b) => a - b);
+  const medianOtherLow = otherLow[Math.floor(otherLow.length / 2)] || 0;
+  if (!dark.label
+    && (dark.low80 >= 0.3 || dark.meanF.centroid < 800 || dark.low80 >= 2.5 * medianOtherLow + 0.05)) {
+    dark.label = 'kick';
+  }
+
+  // middles: instrument character decides
+  const toms = [];
+  for (const c of clusters) {
+    if (c.label) continue;
+    const tonal = c.meanF.flatness < 0.22;
+    if (tonal && c.meanF.centroid < 1100 && c.low80 >= 0.12) {
+      toms.push(c); // low & tonal → tom family (floor vs rack decided below)
+    } else if (c.meanF.centroid >= 3200 || c.meanF.zcr >= 0.25) {
+      c.label = 'hat'; // a second bright sibilant sound is still a hat
+    } else if (c.durMean < 0.06 && c.meanF.centroid >= 900 && c.meanF.centroid < 4200) {
+      c.label = 'rimshot'; // short clicky "k"
+    } else {
+      c.label = 'snare';
+    }
+  }
+  toms.forEach((c, i) => {
+    c.label = toms.length >= 2 && i === 0 ? 'tomfloor' : 'tom';
+  });
+}
+
+/** Mean silhouette score of a clustering (z-space). Higher = better fit. */
+export function silhouette(points, assignment) {
+  const ids = [...new Set(assignment)];
+  if (ids.length < 2) return 0;
+  const byCluster = new Map(ids.map((id) => [id, []]));
+  assignment.forEach((id, i) => byCluster.get(id).push(i));
+  let total = 0;
+  for (let i = 0; i < points.length; i++) {
+    const own = byCluster.get(assignment[i]);
+    if (own.length <= 1) continue; // singleton contributes 0
+    let a = 0;
+    for (const j of own) if (j !== i) a += Math.sqrt(dist2(points[i], points[j]));
+    a /= own.length - 1;
+    let b = Infinity;
+    for (const id of ids) {
+      if (id === assignment[i]) continue;
+      const other = byCluster.get(id);
+      let d = 0;
+      for (const j of other) d += Math.sqrt(dist2(points[i], points[j]));
+      d /= other.length;
+      if (d < b) b = d;
+    }
+    total += (b - a) / Math.max(a, b, 1e-12);
+  }
+  return total / points.length;
 }
 
 /** Deterministic k-means (k-means++ init from seeded PRNG, best of 3 runs). */
@@ -365,11 +491,20 @@ function mergeCloseClusters(fixedPoints, assignment) {
     let closest = null;
     for (let a = 0; a < ids.length; a++) {
       for (let b = a + 1; b < ids.length; b++) {
-        const d = Math.sqrt(dist2(centers.get(ids[a]), centers.get(ids[b])) / dims);
-        if (!closest || d < closest.d) closest = { a: ids[a], b: ids[b], d };
+        const ca = centers.get(ids[a]);
+        const cb = centers.get(ids[b]);
+        const d = Math.sqrt(dist2(ca, cb) / dims);
+        let veto = 0;
+        for (const dd of MERGE_VETO_DIMS) {
+          const diff = Math.abs(ca[dd] - cb[dd]);
+          if (diff > veto) veto = diff;
+        }
+        if (!closest || d < closest.d) closest = { a: ids[a], b: ids[b], d, veto };
       }
     }
-    if (!closest || closest.d > MERGE_DIST_FIXED) return merged;
+    // merge when close on average, unless a categorical cue (low pitch,
+    // ring length) says these are different drums with similar spectra
+    if (!closest || closest.d > MERGE_DIST_FIXED || closest.veto > MERGE_VETO_LIMIT) return merged;
     merged = merged.map((id) => (id === closest.b ? closest.a : id));
   }
 }

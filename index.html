@@ -31,6 +31,11 @@
       <button id="playBtn" class="big-btn play" disabled>▶ Drums</button>
     </section>
 
+    <!-- the beat map: what the conversion heard, drum by drum -->
+    <section id="mapWrap" class="timeline-wrap map-wrap" hidden>
+      <canvas id="timeline" aria-label="Converted beat map"></canvas>
+    </section>
+
     <!-- Voice tuning is no longer needed: conversion now analyzes the whole
          clip and clusters your own sounds against each other (no training).
          Kept for a possible future "advanced" mode:
@@ -126,9 +131,6 @@
           <label class="loop-toggle"><input id="loopChk" type="checkbox" checked /> Loop</label>
           <button id="clearBtn" class="t-btn" disabled>✕ Clear</button>
           <button id="exportBtn" class="t-btn" disabled>⬇ WAV</button>
-        </div>
-        <div class="timeline-wrap">
-          <canvas id="timeline" aria-label="Loop timeline"></canvas>
         </div>
         <p id="recCount" class="rec-count">No hits recorded</p>
       </div>

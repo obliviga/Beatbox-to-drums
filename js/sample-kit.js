@@ -26,6 +26,22 @@ export const REAL_KIT_MANIFEST = {
     boundaries: [0.203, 0.377, 0.569, 0.783],
     files: ['openhat_1.wav', 'openhat_2.wav', 'openhat_3.wav', 'openhat_4.wav', 'openhat_5.wav'],
   },
+  tom: {
+    boundaries: [0.203, 0.377, 0.569, 0.783],
+    files: ['tom_1.wav', 'tom_2.wav', 'tom_3.wav', 'tom_4.wav', 'tom_5.wav'],
+  },
+  tomfloor: {
+    boundaries: [0.203, 0.377, 0.569, 0.783],
+    files: ['tomfloor_1.wav', 'tomfloor_2.wav', 'tomfloor_3.wav', 'tomfloor_4.wav', 'tomfloor_5.wav'],
+  },
+  rimshot: {
+    boundaries: [0.203, 0.377, 0.569, 0.783],
+    files: ['rimshot_1.wav', 'rimshot_2.wav', 'rimshot_3.wav', 'rimshot_4.wav', 'rimshot_5.wav'],
+  },
+  crash: {
+    boundaries: [0.203, 0.377, 0.569, 0.783],
+    files: ['crash_1.wav', 'crash_2.wav', 'crash_3.wav', 'crash_4.wav', 'crash_5.wav'],
+  },
 };
 
 /** Which velocity layer a hit falls into (0 = softest). Pure, testable. */
