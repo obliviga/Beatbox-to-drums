@@ -22,7 +22,7 @@ import { loadRealKit } from './sample-kit.js';
 import { analyzeClip } from './clip-analysis.js';
 import { VERSION } from './version.js';
 import {
-  loadNeuralConfig, saveNeuralConfig, isConfigured, generateRestyle, DEFAULT_STRENGTH,
+  loadNeuralConfig, saveNeuralConfig, isConfigured, composeBeat,
 } from './neural.js';
 
 const CAPTURE_SAMPLES = 1024; // keep in sync with js/worklet/onset-processor.js
@@ -53,7 +53,6 @@ const els = {
   aiBtn: document.getElementById('aiBtn'),
   aiPanel: document.getElementById('aiPanel'),
   aiPrompt: document.getElementById('aiPrompt'),
-  aiRelay: document.getElementById('aiRelay'),
   aiKey: document.getElementById('aiKey'),
   aiGenerate: document.getElementById('aiGenerate'),
   aiClose: document.getElementById('aiClose'),
@@ -113,10 +112,11 @@ let rebuildingAudio = false;
 // AI restyle (one take at a time, user's own key, optional)
 let aiBusy = false;
 let aiBlob = null;
-let aiType = 'audio/mpeg';
+let aiType = 'audio/wav';
 let aiUrl = null;
 let aiAudio = null;
 let aiPlaying = false;
+let aiBpm = null; // tempo of the last composed beat (for the saved filename)
 
 // Personal voice profile ("Tune to my voice") — on-device k-NN
 const PROFILE_KEY = 'b2d-voice-profile-v1';
@@ -843,6 +843,7 @@ function invalidateAiTake() {
     aiUrl = null;
   }
   aiBlob = null;
+  aiBpm = null;
   if (els.aiRow) els.aiRow.hidden = true;
 }
 
@@ -886,7 +887,6 @@ function playAiTake() {
 function openAiPanel() {
   const cfg = loadNeuralConfig();
   if (els.aiPrompt && !els.aiPrompt.value) els.aiPrompt.value = cfg.prompt;
-  if (els.aiRelay && !els.aiRelay.value) els.aiRelay.value = cfg.relayUrl;
   if (els.aiKey && !els.aiKey.value) els.aiKey.value = cfg.apiKey;
   els.aiPanel.hidden = !els.aiPanel.hidden;
 }
@@ -896,50 +896,43 @@ async function runAiGenerate() {
   if (recorder.state === 'recording' || recorder.state === 'armed' || calibration) return;
   const cfg = {
     prompt: (els.aiPrompt?.value || '').trim() || loadNeuralConfig().prompt,
-    relayUrl: (els.aiRelay?.value || '').trim(),
     apiKey: (els.aiKey?.value || '').trim(),
-    strength: DEFAULT_STRENGTH,
   };
   saveNeuralConfig(cfg);
   if (!isConfigured(cfg)) {
-    setStatus('Add your relay URL first — see worker/relay.js in the repo (2-minute setup).', true);
+    setStatus('Add your Anthropic API key first — get one at console.anthropic.com.', true);
     return;
   }
   aiBusy = true;
   updateTransportUI();
-  setStatus('✨ Generating your AI take… (usually 15–40 s)');
+  setStatus('✨ Claude is composing your beat… (usually 10–30 s)');
   try {
-    // give the model musical context: several passes of the loop
-    const base = recorder.playableEvents();
-    const dur = recorder.loopDur || 2;
-    const passes = Math.max(1, Math.min(8, Math.ceil(8 / dur)));
-    const events = [];
-    for (let p = 0; p < passes; p++) {
-      for (const e of base) events.push({ ...e, t: e.t + p * dur });
-    }
-    const wav = await renderLoopWav({
-      events,
-      loopDur: dur * passes,
-      kit: kitName,
-      sampleKit: kitName === 'real' ? realKit : null,
-    });
-    const { blob, type } = await generateRestyle({
-      wav,
+    // Claude composes from the performance transcription (text, not audio),
+    // then the app performs the returned pattern on the current kit.
+    const beat = await composeBeat({
+      events: recorder.playableEvents(),
+      bpm: recorder.groove ? recorder.loopBpm : null,
+      loopDur: recorder.loopDur,
       prompt: cfg.prompt,
-      strength: cfg.strength,
-      durationSec: dur * passes,
-      relayUrl: cfg.relayUrl,
       apiKey: cfg.apiKey,
     });
+    const wav = await renderLoopWav({
+      events: beat.events,
+      loopDur: beat.loopDur,
+      kit: kitName,
+      sampleKit: kitName === 'real' ? realKit : null,
+      seamless: true,
+    });
     invalidateAiTake();
-    aiBlob = blob;
-    aiType = type;
-    aiUrl = URL.createObjectURL(blob);
+    aiBlob = new Blob([wav], { type: 'audio/wav' });
+    aiType = 'audio/wav';
+    aiBpm = beat.bpm;
+    aiUrl = URL.createObjectURL(aiBlob);
     if (els.aiRow) els.aiRow.hidden = false;
     if (els.aiPanel) els.aiPanel.hidden = true;
-    setStatus('✨ AI take ready — ▶ AI take to hear it');
+    setStatus(`✨ AI beat ready — ${beat.bars} bar${beat.bars === 1 ? '' : 's'} at ${beat.bpm} BPM · ▶ AI take to hear it`);
   } catch (err) {
-    setStatus((err && err.message) || 'AI generation failed.', true);
+    setStatus((err && err.message) || 'AI composition failed.', true);
   } finally {
     aiBusy = false;
     updateTransportUI();
@@ -961,7 +954,7 @@ if (els.aiSaveBtn) {
     const a = document.createElement('a');
     a.href = aiUrl;
     const ext = /wav/i.test(aiType) ? 'wav' : 'mp3';
-    a.download = `beatbox-ai-${recorder && recorder.loopBpm ? recorder.loopBpm + 'bpm' : 'take'}.${ext}`;
+    a.download = `beatbox-ai-${aiBpm ? aiBpm + 'bpm' : 'take'}.${ext}`;
     document.body.appendChild(a);
     a.click();
     a.remove();
@@ -1128,7 +1121,7 @@ function updateTransportUI() {
   }
   if (els.aiBtn) {
     els.aiBtn.disabled = !hasEvents || state === 'recording' || state === 'armed' || !!calibration || aiBusy;
-    els.aiBtn.textContent = aiBusy ? '✨ Generating…' : '✨ Restyle with AI';
+    els.aiBtn.textContent = aiBusy ? '✨ Composing…' : '✨ Compose with AI';
   }
   if (els.aiGenerate) els.aiGenerate.disabled = aiBusy;
   if (els.aiPlayBtn) {

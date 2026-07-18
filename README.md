@@ -1,6 +1,6 @@
 # Beatbox → Drums 🥁
 
-Beatbox into your phone's microphone and hear yourself as an actual drum kit — acoustic, 808, trap, electro, lo-fi, or percussion. Everything runs live in the browser: no app install, no server, and audio never leaves your device — except the optional **✨ Restyle with AI** feature, which sends your rendered beat (never the raw mic recording) to a generative audio model only when you tap Generate, using your own API key.
+Beatbox into your phone's microphone and hear yourself as an actual drum kit — acoustic, 808, trap, electro, lo-fi, or percussion. Everything runs live in the browser: no app install, no server, and your audio never leaves your device. The optional **✨ Compose with AI** feature sends only a *text transcription* of your beat's rhythm (hit times and drums — never any audio) to Claude, using your own API key, and gets back a brand-new composed beat.
 
 > **Current UI: intentionally minimal.** While the core record → convert → play flow gets solid, the interface shows a **Record button**, a **live waveform**, **▶ Original** (plays back the raw audio you actually recorded), **▶ Drums** (plays the converted beat on the real sampled kit), and **🎯 Tune to my voice**. Recording is silent capture — you hear the drums only on ▶ Drums — and the mic is active only while a take (or tuning) is in progress. The features described below (kits, pads, sensitivity, metronome, beat styles, timeline, WAV export, …) still exist and are unit-tested — their markup is commented out in `index.html`, and `js/main.js` re-enables each section automatically when uncommented.
 
@@ -20,7 +20,7 @@ Make a **“B”** sound and a kick drum fires. **“Pss”** and you get a snar
 - 🔁 **Metronome mode** — optional 4-beat count-in with clicks, for when you want to record to a fixed grid
 - 📊 **Timeline** — see your loop on a three-lane grid with a live playhead
 - 💾 **WAV export** — renders offline; bar-locked loops wrap their decay tails around so the file loops seamlessly in a DAW
-- ✨ **AI restyle (optional)** — one tap sends your rendered beat to a generative audio model (Stability AI *Stable Audio 2*, audio-to-audio) and returns one produced, reimagined take you can play and save. Uses your own API key through your own tiny relay — see [AI restyle setup](#-ai-restyle-optional)
+- ✨ **AI composer (optional)** — Claude reads a text transcription of your performance and *writes one brand-new beat* (as a structured drum score); the app performs it on the sampled kit and hands you a WAV. Like asking an AI to make music that's never been heard — except the beat is grounded in what you beatboxed. Uses your own Anthropic API key, no server anywhere — see [AI composer setup](#-compose-with-ai-optional)
 - 🔊 **Speaker guard** — briefly gates detection after each drum sound so speakers can't re-trigger the mic (for playing without headphones)
 - 🎚️ **Sensitivity control**, 👆 **tap pads**, ⌨️ **keyboard pads** (A/S/D, R to record, Space to play)
 - 📱 **Installable PWA** — add it to your home screen, works offline
@@ -55,19 +55,18 @@ Get close to the mic and keep sounds short and punchy. Turn on *Show detection d
 
 Prefer recording to a click? Enable *Metronome*, set a BPM, and Record gives you a 4-beat count-in first, with a visible countdown (handy when the phone is muted). Pressing the button during the count-in cancels without touching your previous loop. If no steady tempo can be heard in a free take (it needs ~6+ hits with intentional timing), the take stays available raw.
 
-## ✨ AI restyle (optional)
+## ✨ Compose with AI (optional)
 
-The converter maps your mouth sounds onto drum samples. **Restyle with AI** goes one step further: it hands your beat to a generative audio model (Stability AI's **Stable Audio 2**, audio-to-audio) and gets back one fully *produced* take that follows your rhythm but reimagines the sound. One tap = one take, generated with **your own API key** — there's no shared backend and nothing to subscribe to in the app.
+The converter plays back *your* beat on real drums. **Compose with AI** goes one step further: it asks an AI to make a beat that has never existed before — grounded in yours. The split of labor is what makes it work:
 
-**One-time setup (~2 minutes):**
+- **Claude composes.** The app transcribes your take into a drum score — plain text like `0.00 kick v0.95 · 0.52 hat v0.4 …` plus the detected tempo — and sends it to the Claude API with your style prompt. Claude writes back one brand-new pattern (2–4 bars, full kit, ghost notes, fills, dynamics) as structured JSON, validated against a schema so it always parses.
+- **Your kit performs.** The app renders that pattern through the same sampled acoustic kit, velocity layers, and production chain as everything else — so the AI beat comes back as a seamless-looping, produced **WAV sample** you can play, A/B against your own take, and save straight into a DAW.
 
-1. **Get a Stability AI key** at [platform.stability.ai](https://platform.stability.ai) — new accounts include free credits, and after that a take costs on the order of a few cents.
-2. **Deploy the relay**: browsers can't call `api.stability.ai` directly (no CORS), so you run your own tiny forwarder. On [dash.cloudflare.com](https://dash.cloudflare.com) → *Workers & Pages* → *Create Worker*, paste the contents of [`worker/relay.js`](worker/relay.js), and deploy — the free tier is far more than enough. The worker only forwards the one endpoint the app uses; it is not a general-purpose proxy.
-3. **Point the app at it**: record a beat, tap **✨ Restyle with AI**, and paste your `https://….workers.dev` URL. For the key, either store it in the worker as a secret named `STABILITY_API_KEY` (*Settings → Variables* — recommended, the key never touches the browser), or paste it into the app, where it's kept in `localStorage` and sent only to *your* relay.
+**One-time setup (~1 minute):** get an API key at [console.anthropic.com](https://console.anthropic.com), record a beat, tap **✨ Compose with AI**, paste the key. That's it — the browser talks to the Claude API directly (no relay, no backend, nothing to deploy). The key stays in your browser's `localStorage` and is sent only to `api.anthropic.com`. A beat costs a few cents; composing takes ~10–30 s.
 
-Then tap **✨ Generate one take** (15–40 s), and play or save the result alongside your original and the sample-based conversion. The style prompt is editable — try "boom bap drum break, dusty vinyl" or "tight metal kit, roomy toms".
+The style prompt is the fun knob — try "boom bap, dusty and behind the beat", "drum &amp; bass, frantic hats", or "half-time metal, huge toms". Every tap composes a fresh take, so re-roll until one hits.
 
-**Privacy:** this is the only feature that sends audio anywhere. What's uploaded is the *rendered drum loop* (the same thing ⬇ Save exports — never your raw voice recording), it happens only when you tap Generate, and it goes to your own relay and on to the AI provider. Everything else in the app stays 100% on-device.
+**Privacy:** no audio is ever uploaded — not your voice, not the rendered drums. The only thing sent (and only when you tap Compose) is the text transcription of hit timings shown above. Everything audible happens 100% on-device.
 
 ## How it works
 
@@ -108,8 +107,8 @@ npm install     # only needed for the browser smoke test
 npm run smoke   # drives the full app in headless Chromium with a fake mic
 ```
 
-- `test/unit/` covers the classifier (against synthesized kick/snare/hat waveforms), the onset detector (driven block-by-block, including an end-to-end capture→classify test), the groove analysis (tempo detection with jitter, pickup wrapping, style ladder, random-timing rejection), the recorder's bar math and WAV encoding, and the AI-restyle client (request format, config persistence, error mapping — with an injected `fetch`, no network).
-- `test/smoke.mjs` exercises the real thing: mic start, all kits, auto-beat detection from timed taps, the style ladder, re-gridding, count-in recording, WAV download, persistence, the service worker, and the AI restyle flow against a route-intercepted mock relay (no real network).
+- `test/unit/` covers the classifier (against synthesized kick/snare/hat waveforms), the onset detector (driven block-by-block, including an end-to-end capture→classify test), the groove analysis (tempo detection with jitter, pickup wrapping, style ladder, random-timing rejection), the recorder's bar math and WAV encoding, and the AI composer client (score building, request format, pattern validation/clamping, error mapping — with an injected `fetch`, no network).
+- `test/smoke.mjs` exercises the real thing: mic start, all kits, auto-beat detection from timed taps, the style ladder, re-gridding, count-in recording, WAV download, persistence, the service worker, and the AI composer flow against a route-intercepted mock of the Claude API (no real network — including asserting that the request carries zero audio).
 - CI (`.github/workflows/ci.yml`) runs the unit tests on every push and PR.
 
 ## Project layout
@@ -125,8 +124,7 @@ js/sample-kit.js               real-kit manifest, loader, velocity layers
 samples/real/                  GMRockKit kick/snare/hat (see LICENSE.md there)
 js/groove.js                   tempo detection + grid fitting + beat styles
 js/recorder.js                 loop recorder, WAV encode/render
-js/neural.js                   AI restyle client (config, request, errors)
-worker/relay.js                copy-paste Cloudflare Worker: CORS relay for the AI API
+js/neural.js                   AI composer: take → text score → Claude → new pattern
 js/metronome.js                look-ahead click scheduler
 js/timeline.js                 canvas loop view
 js/worklet/onset-processor.js  audio-thread onset detector

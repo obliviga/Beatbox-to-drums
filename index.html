@@ -50,25 +50,24 @@
       <button id="exportBtn" class="save-btn" disabled>⬇ Save beat sample (WAV)</button>
     </section>
 
-    <!-- optional: one AI-reimagined take of the beat, via the user's own
-         key + relay (the only feature that sends audio off the device) -->
+    <!-- optional: Claude composes one brand-new beat from the take's
+         rhythm transcription (text — no audio leaves the device), and
+         the app performs it on the current kit -->
     <section class="ai-section">
-      <button id="aiBtn" class="save-btn ai-btn" disabled>✨ Restyle with AI</button>
+      <button id="aiBtn" class="save-btn ai-btn" disabled>✨ Compose with AI</button>
       <div id="aiPanel" class="ai-panel" hidden>
         <label class="ai-field">Style prompt
           <input id="aiPrompt" type="text" autocomplete="off" />
         </label>
-        <label class="ai-field">Relay URL
-          <input id="aiRelay" type="text" autocomplete="off" placeholder="https://your-relay.workers.dev" />
+        <label class="ai-field">Anthropic API key
+          <input id="aiKey" type="password" autocomplete="off" placeholder="sk-ant-…" />
         </label>
-        <label class="ai-field">Stability API key
-          <input id="aiKey" type="password" autocomplete="off" placeholder="sk-… (optional if stored in the relay)" />
-        </label>
-        <p class="hint-line">One tap = one take with your own key (a few cents each).
-        Your beat’s audio is sent to the AI provider for this feature only.
-        Relay setup takes ~2 minutes: see <code>worker/relay.js</code> in the repo.</p>
+        <p class="hint-line">Claude writes a brand-new beat from your performance and this
+        kit plays it. One tap = one beat with your own key (a few cents each) —
+        get one at <code>console.anthropic.com</code>. Only your beat’s rhythm is
+        sent, as text; your audio never leaves the device.</p>
         <div class="ai-actions">
-          <button id="aiGenerate" class="save-btn small">✨ Generate one take</button>
+          <button id="aiGenerate" class="save-btn small">✨ Compose one beat</button>
           <button id="aiClose" class="save-btn small ghost">Close</button>
         </div>
       </div>
@@ -88,7 +87,8 @@
 
 
     <footer class="footer">
-      <p>Runs in your browser — audio never leaves your device, except when you tap ✨ Restyle.</p>
+      <p>Runs in your browser — your audio never leaves your device.
+      ✨ Compose sends only your beat’s rhythm (as text) to Claude.</p>
       <p id="versionLine" class="version"></p>
     </footer>
 

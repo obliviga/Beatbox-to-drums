@@ -3,10 +3,10 @@
  *
  * The UI is currently minimal: Record → waveform → Play. Context A uses
  * Chrome's fake microphone (a pulsing tone that genuinely exercises the
- * onset → classify → synth pipeline) and mocks the AI-restyle relay with
- * route interception (no real network). Context B force-denies getUserMedia
- * and drives hits with precisely-timed keyboard events, covering the
- * mic-less fallback and deterministic tempo detection.
+ * onset → classify → synth pipeline) and mocks the Claude API with route
+ * interception (no real network) for the AI-composer flow. Context B
+ * force-denies getUserMedia and drives hits with precisely-timed keyboard
+ * events, covering the mic-less fallback and deterministic tempo detection.
  *
  * Usage:  npm install && npm run smoke
  * Env:    CHROME_PATH to point at a Chromium binary if autodetection fails.
@@ -60,21 +60,6 @@ function serve(rootDir) {
   return new Promise((resolve) => {
     server.listen(0, '127.0.0.1', () => resolve({ server, port: server.address().port }));
   });
-}
-
-/** A tiny playable WAV (mono PCM16, decaying tone) — the mocked AI response. */
-function makeWav(seconds = 1.2, rate = 8000) {
-  const n = Math.floor(seconds * rate);
-  const buf = Buffer.alloc(44 + n * 2);
-  buf.write('RIFF', 0); buf.writeUInt32LE(36 + n * 2, 4); buf.write('WAVE', 8);
-  buf.write('fmt ', 12); buf.writeUInt32LE(16, 16); buf.writeUInt16LE(1, 20);
-  buf.writeUInt16LE(1, 22); buf.writeUInt32LE(rate, 24); buf.writeUInt32LE(rate * 2, 28);
-  buf.writeUInt16LE(2, 32); buf.writeUInt16LE(16, 34);
-  buf.write('data', 36); buf.writeUInt32LE(n * 2, 40);
-  for (let i = 0; i < n; i++) {
-    buf.writeInt16LE(Math.round(Math.sin((i * 2 * Math.PI * 440) / rate) * 12000 * (1 - i / n)), 44 + i * 2);
-  }
-  return buf;
 }
 
 const { server, port } = await serve(ROOT);
@@ -261,74 +246,91 @@ try {
   console.log(`✓ style switched to 808, sample saved: ${download.suggestedFilename()} (${wavBytes.length} bytes)`);
   await pageA.click('.chip[data-kit="real"]');
 
-  step = 'A: AI restyle asks for a relay before generating';
-  check(!(await pageA.$eval('#aiBtn', (el) => el.disabled)), 'AI restyle should be enabled after a take');
+  step = 'A: AI composer asks for an API key before generating';
+  check(!(await pageA.$eval('#aiBtn', (el) => el.disabled)), 'AI composer should be enabled after a take');
   await pageA.click('#aiBtn');
   check(!(await pageA.$eval('#aiPanel', (el) => el.hidden)), 'AI panel should open');
   const promptPrefill = await pageA.$eval('#aiPrompt', (el) => el.value);
   check(promptPrefill.length > 10, `prompt should be pre-filled, got "${promptPrefill}"`);
-  await pageA.click('#aiGenerate'); // no relay configured yet
-  await waitStatus(pageA, /Add your relay URL first/);
-  console.log('✓ unconfigured AI restyle explains the relay setup');
+  await pageA.click('#aiGenerate'); // no key configured yet
+  await waitStatus(pageA, /Add your Anthropic API key first/);
+  console.log('✓ unconfigured AI composer explains the key setup');
 
-  step = 'A: AI restyle generates one take (mocked relay)';
-  const AI_ROUTE = '**/v2beta/audio/stable-audio-2/audio-to-audio';
-  const mockTake = makeWav();
+  step = 'A: AI composes a beat (mocked Claude API)';
+  const AI_ROUTE = '**/v1/messages';
+  // the "composed" beat Claude returns: 2 bars at 120 BPM, times in beats
+  const mockBeat = {
+    bpm: 120,
+    bars: 2,
+    events: [
+      { t: 0, type: 'kick', velocity: 0.95, roll: false },
+      { t: 0.5, type: 'hat', velocity: 0.5, roll: false },
+      { t: 1, type: 'snare', velocity: 0.9, roll: false },
+      { t: 1.5, type: 'hat', velocity: 0.45, roll: false },
+      { t: 2, type: 'kick', velocity: 0.9, roll: false },
+      { t: 2.5, type: 'kick', velocity: 0.7, roll: false },
+      { t: 3, type: 'snare', velocity: 0.9, roll: false },
+      { t: 3.5, type: 'openhat', velocity: 0.6, roll: false },
+      { t: 5, type: 'snare', velocity: 0.4, roll: true },
+      { t: 7.5, type: 'crash', velocity: 0.8, roll: false },
+    ],
+  };
   let aiReq = null;
   await pageA.route(AI_ROUTE, async (route) => {
     const req = route.request();
-    if (req.method() === 'OPTIONS') { // CORS preflight (x-api-key is a custom header)
+    if (req.method() === 'OPTIONS') { // CORS preflight (custom API headers)
       await route.fulfill({
         status: 204,
         headers: {
           'Access-Control-Allow-Origin': '*',
           'Access-Control-Allow-Methods': 'POST, OPTIONS',
-          'Access-Control-Allow-Headers': 'content-type, x-api-key, accept',
+          'Access-Control-Allow-Headers': 'content-type, x-api-key, anthropic-version, anthropic-dangerous-direct-browser-access',
         },
       });
       return;
     }
-    aiReq = { url: req.url(), headers: req.headers(), body: req.postDataBuffer() };
+    aiReq = { url: req.url(), headers: req.headers(), body: JSON.parse(req.postData()) };
     await route.fulfill({
       status: 200,
-      contentType: 'audio/wav',
+      contentType: 'application/json',
       headers: { 'Access-Control-Allow-Origin': '*' },
-      body: mockTake,
+      body: JSON.stringify({
+        stop_reason: 'end_turn',
+        content: [{ type: 'text', text: JSON.stringify(mockBeat) }],
+      }),
     });
   });
-  await pageA.fill('#aiRelay', 'https://fake-relay.example');
-  await pageA.fill('#aiKey', 'sk-test');
+  await pageA.fill('#aiKey', 'sk-ant-test');
   await pageA.click('#aiGenerate');
-  await waitStatus(pageA, /AI take ready/, 30000);
-  check(aiReq, 'no request reached the mocked relay');
-  check(aiReq.url === 'https://fake-relay.example/v2beta/audio/stable-audio-2/audio-to-audio',
-    `wrong endpoint: ${aiReq.url}`);
-  check(aiReq.headers['x-api-key'] === 'sk-test', 'API key header not forwarded');
-  check((aiReq.headers['content-type'] || '').startsWith('multipart/form-data'),
-    `expected multipart body, got ${aiReq.headers['content-type']}`);
-  if (aiReq.body) { // CDP may withhold large post bodies; assert content when available
-    const bodyStr = aiReq.body.toString('latin1');
-    check(bodyStr.includes('name="prompt"'), 'multipart prompt field missing');
-    check(bodyStr.includes('name="audio"') && bodyStr.includes('RIFF'), 'rendered WAV missing from request');
-    check(bodyStr.includes('name="strength"'), 'strength field missing');
-  }
+  await waitStatus(pageA, /AI beat ready/, 30000);
+  check(aiReq, 'no request reached the mocked Claude API');
+  check(aiReq.url === 'https://api.anthropic.com/v1/messages', `wrong endpoint: ${aiReq.url}`);
+  check(aiReq.headers['x-api-key'] === 'sk-ant-test', 'API key header missing');
+  check(aiReq.headers['anthropic-dangerous-direct-browser-access'] === 'true', 'browser-access header missing');
+  check(aiReq.body.model && aiReq.body.model.startsWith('claude-'), `model: ${aiReq.body.model}`);
+  check(aiReq.body.output_config?.format?.type === 'json_schema', 'structured output schema missing');
+  check(/Style I want/.test(aiReq.body.messages[0].content), 'style prompt missing from request');
+  check(/\b(kick|snare|hat)\b/.test(aiReq.body.messages[0].content), 'performance transcription missing');
+  check(!JSON.stringify(aiReq.body).includes('RIFF'), 'request must contain no audio — rhythm text only');
   check(!(await pageA.$eval('#aiRow', (el) => el.hidden)), 'AI take row should appear');
-  check(await pageA.$eval('#aiPanel', (el) => el.hidden), 'AI panel should close after generating');
-  console.log(`✓ AI request well-formed (endpoint, key, multipart${aiReq.body ? ' + WAV payload' : ''}); take ready`);
+  check(await pageA.$eval('#aiPanel', (el) => el.hidden), 'AI panel should close after composing');
+  console.log('✓ Claude request well-formed (key, schema, score as text, zero audio); beat ready');
 
-  step = 'A: play + save the AI take';
+  step = 'A: play + save the AI beat';
   await pageA.click('#aiPlayBtn');
   await waitStatus(pageA, /Playing the AI take/);
   check((await pageA.textContent('#aiPlayBtn')).includes('Stop'), 'AI play should toggle to Stop');
-  await waitStatus(pageA, /▶ Drums/, 10000); // short mock clip ends, status returns
+  await waitStatus(pageA, /▶ Drums/, 12000); // 4-second rendered loop ends, status returns
   const aiDlPromise = pageA.waitForEvent('download', { timeout: 10000 });
   await pageA.click('#aiSaveBtn');
   const aiDl = await aiDlPromise;
   const aiBytes = await readFile(await aiDl.path());
-  check(aiBytes.length === mockTake.length && aiBytes.subarray(0, 4).toString() === 'RIFF',
-    `saved AI take should be the returned audio (${aiBytes.length} vs ${mockTake.length} bytes)`);
-  check(/^beatbox-ai-.*\.wav$/.test(aiDl.suggestedFilename()), `AI filename: ${aiDl.suggestedFilename()}`);
-  console.log(`✓ AI take plays via media element and saves (${aiDl.suggestedFilename()})`);
+  check(aiBytes.subarray(0, 4).toString() === 'RIFF' && aiBytes.subarray(8, 12).toString() === 'WAVE',
+    'saved AI beat is not a WAV');
+  const aiFrames = (aiBytes.length - 44) / 4;
+  check(aiFrames === 4 * 44100, `rendered length should be the 2-bar loop (got ${aiFrames} frames)`);
+  check(/^beatbox-ai-120bpm\.wav$/.test(aiDl.suggestedFilename()), `AI filename: ${aiDl.suggestedFilename()}`);
+  console.log(`✓ composed beat rendered on the kit, plays, and saves (${aiDl.suggestedFilename()}, ${aiBytes.length} bytes)`);
   await pageA.unroute(AI_ROUTE);
 
   step = 'A: record during playback starts a re-take';
