@@ -22,7 +22,7 @@ import { loadRealKit } from './sample-kit.js';
 import { analyzeClip } from './clip-analysis.js';
 import { VERSION } from './version.js';
 import {
-  loadNeuralConfig, saveNeuralConfig, isConfigured, composeBeat,
+  loadNeuralConfig, saveNeuralConfig, isConfigured, generateAudio, DEFAULT_STRENGTH,
 } from './neural.js';
 
 const CAPTURE_SAMPLES = 1024; // keep in sync with js/worklet/onset-processor.js
@@ -51,8 +51,10 @@ const els = {
   mapWrap: document.getElementById('mapWrap'),
   timelineCanvas: document.getElementById('timeline'),
   aiBtn: document.getElementById('aiBtn'),
+  aiSettings: document.getElementById('aiSettings'),
   aiPanel: document.getElementById('aiPanel'),
   aiPrompt: document.getElementById('aiPrompt'),
+  aiRelay: document.getElementById('aiRelay'),
   aiKey: document.getElementById('aiKey'),
   aiGenerate: document.getElementById('aiGenerate'),
   aiClose: document.getElementById('aiClose'),
@@ -606,24 +608,26 @@ els.recBtn.addEventListener('click', async () => {
   }
 });
 
-els.playBtn.addEventListener('click', async () => {
-  ensureAudio();
-  syncRecorderSettings();
-  if (originalPlaying) stopOriginal();
-  if (aiPlaying) stopAiTake();
-  if (recorder.state === 'playing') {
-    recorder.stopPlay();
-    return;
-  }
-  if (recorder.state !== 'idle' || calibration) return;
-  // give the real kit a moment to finish loading so the first playback
-  // already uses the sampled drums (synth fallback covers a slow network)
-  if (kitName === 'real' && !realKit && realKitPromise) {
-    setStatus('Loading drums…');
-    await Promise.race([realKitPromise, new Promise((r) => setTimeout(r, 4000))]);
-  }
-  if (recorder.state === 'idle') recorder.play(loopEnabled);
-});
+if (els.playBtn) {
+  els.playBtn.addEventListener('click', async () => {
+    ensureAudio();
+    syncRecorderSettings();
+    if (originalPlaying) stopOriginal();
+    if (aiPlaying) stopAiTake();
+    if (recorder.state === 'playing') {
+      recorder.stopPlay();
+      return;
+    }
+    if (recorder.state !== 'idle' || calibration) return;
+    // give the real kit a moment to finish loading so the first playback
+    // already uses the sampled drums (synth fallback covers a slow network)
+    if (kitName === 'real' && !realKit && realKitPromise) {
+      setStatus('Loading drums…');
+      await Promise.race([realKitPromise, new Promise((r) => setTimeout(r, 4000))]);
+    }
+    if (recorder.state === 'idle') recorder.play(loopEnabled);
+  });
+}
 
 /* ---------- original-take playback (media element = media speaker) ---------- */
 
@@ -654,11 +658,12 @@ function invalidateOriginalUrl() {
   rawTakeGain = 1;
 }
 
+// the standing call-to-action once a take exists
+const READY_HINT = '✨ Generate for the AI track, ▶ Original for your take';
+
 function onOriginalEnded() {
   originalPlaying = false;
-  setStatus(takeSummary
-    ? `${takeSummary} — ▶ Drums to hear it, ▶ Original for your take`
-    : 'Press ● Record and beatbox');
+  setStatus(takeSummary ? `${takeSummary} — ${READY_HINT}` : 'Press ● Record and beatbox');
   updateTransportUI();
   maybeRebuildAudio();
 }
@@ -857,7 +862,7 @@ function stopAiTake() {
 
 function onAiEnded() {
   aiPlaying = false;
-  setStatus(takeSummary ? `${takeSummary} — ▶ Drums to hear it, ▶ Original for your take` : 'Press ● Record and beatbox');
+  setStatus(takeSummary ? `${takeSummary} — ${READY_HINT}` : 'Press ● Record and beatbox');
   updateTransportUI();
 }
 
@@ -877,16 +882,17 @@ function playAiTake() {
   aiPlaying = true;
   aiAudio.play().catch(() => {
     aiPlaying = false;
-    setStatus('Couldn’t play the AI take — try again.', true);
+    setStatus('Couldn’t play the AI track — try again.', true);
     updateTransportUI();
   });
-  setStatus('Playing the AI take ✨');
+  setStatus('Playing the AI track ✨');
   updateTransportUI();
 }
 
 function openAiPanel() {
   const cfg = loadNeuralConfig();
   if (els.aiPrompt && !els.aiPrompt.value) els.aiPrompt.value = cfg.prompt;
+  if (els.aiRelay && !els.aiRelay.value) els.aiRelay.value = cfg.relayUrl;
   if (els.aiKey && !els.aiKey.value) els.aiKey.value = cfg.apiKey;
   els.aiPanel.hidden = !els.aiPanel.hidden;
 }
@@ -894,52 +900,70 @@ function openAiPanel() {
 async function runAiGenerate() {
   if (aiBusy || !recorder || !recorder.events.length) return;
   if (recorder.state === 'recording' || recorder.state === 'armed' || calibration) return;
+  const stored = loadNeuralConfig();
   const cfg = {
-    prompt: (els.aiPrompt?.value || '').trim() || loadNeuralConfig().prompt,
-    apiKey: (els.aiKey?.value || '').trim(),
+    prompt: (els.aiPrompt?.value || '').trim() || stored.prompt,
+    relayUrl: (els.aiRelay?.value || '').trim() || stored.relayUrl,
+    apiKey: (els.aiKey?.value || '').trim() || stored.apiKey,
   };
   saveNeuralConfig(cfg);
   if (!isConfigured(cfg)) {
-    setStatus('Add your Anthropic API key first — get one at console.anthropic.com.', true);
+    if (els.aiPanel) els.aiPanel.hidden = false;
+    setStatus('Add your relay URL first — see worker/relay.js in the repo (2-minute setup).', true);
     return;
   }
   aiBusy = true;
   updateTransportUI();
-  setStatus('✨ Claude is composing your beat… (usually 10–30 s)');
+  setStatus('✨ Generating your AI track… (usually 15–40 s)');
   try {
-    // Claude composes from the performance transcription (text, not audio),
-    // then the app performs the returned pattern on the current kit.
-    const beat = await composeBeat({
-      events: recorder.playableEvents(),
-      bpm: recorder.groove ? recorder.loopBpm : null,
-      loopDur: recorder.loopDur,
-      prompt: cfg.prompt,
-      apiKey: cfg.apiKey,
-    });
+    // upload material: the faithful drum conversion, looped so the model
+    // gets at least ~8 s of musical context (never the raw voice take)
+    const base = recorder.playableEvents();
+    const dur = recorder.loopDur || 2;
+    const passes = Math.max(1, Math.min(8, Math.ceil(8 / dur)));
+    const events = [];
+    for (let p = 0; p < passes; p++) {
+      for (const e of base) events.push({ ...e, t: e.t + p * dur });
+    }
     const wav = await renderLoopWav({
-      events: beat.events,
-      loopDur: beat.loopDur,
+      events,
+      loopDur: dur * passes,
       kit: kitName,
       sampleKit: kitName === 'real' ? realKit : null,
-      seamless: true,
+    });
+    const { blob, type } = await generateAudio({
+      wav,
+      prompt: cfg.prompt,
+      strength: DEFAULT_STRENGTH,
+      durationSec: dur * passes,
+      relayUrl: cfg.relayUrl,
+      apiKey: cfg.apiKey,
     });
     invalidateAiTake();
-    aiBlob = new Blob([wav], { type: 'audio/wav' });
-    aiType = 'audio/wav';
-    aiBpm = beat.bpm;
-    aiUrl = URL.createObjectURL(aiBlob);
+    aiBlob = blob;
+    aiType = type;
+    aiBpm = recorder.groove ? recorder.loopBpm : null;
+    aiUrl = URL.createObjectURL(blob);
     if (els.aiRow) els.aiRow.hidden = false;
     if (els.aiPanel) els.aiPanel.hidden = true;
-    setStatus(`✨ AI beat ready — ${beat.bars} bar${beat.bars === 1 ? '' : 's'} at ${beat.bpm} BPM · ▶ AI take to hear it`);
+    setStatus('✨ AI track ready — ▶ AI track to hear it');
   } catch (err) {
-    setStatus((err && err.message) || 'AI composition failed.', true);
+    setStatus((err && err.message) || 'AI generation failed.', true);
   } finally {
     aiBusy = false;
     updateTransportUI();
   }
 }
 
-if (els.aiBtn) els.aiBtn.addEventListener('click', openAiPanel);
+// One-tap when set up: the big ✨ button generates directly once a relay
+// is configured, and opens the setup panel only when it isn't (or via ⚙).
+if (els.aiBtn) {
+  els.aiBtn.addEventListener('click', () => {
+    if (isConfigured(loadNeuralConfig())) runAiGenerate();
+    else openAiPanel();
+  });
+}
+if (els.aiSettings) els.aiSettings.addEventListener('click', openAiPanel);
 if (els.aiClose) els.aiClose.addEventListener('click', () => { els.aiPanel.hidden = true; });
 if (els.aiGenerate) els.aiGenerate.addEventListener('click', runAiGenerate);
 if (els.aiPlayBtn) {
@@ -1008,7 +1032,9 @@ function onRecorderState(state) {
     setStatus(micOn ? 'Listening — beatbox away!' : 'Press Record and beatbox — “B” kick · “Pss” snare · “Ts” hi-hat');
   }
   if (state !== 'idle' || prevRecorderState !== 'recording') {
-    if (state === 'playing' || state === 'recording' || state === 'armed') els.playBtn.classList.remove('ready');
+    if ((state === 'playing' || state === 'recording' || state === 'armed') && els.aiBtn) {
+      els.aiBtn.classList.remove('ready');
+    }
   }
   prevRecorderState = state;
   updateRecCount();
@@ -1051,8 +1077,8 @@ function showTakeSummary() {
     summary = `Captured ${recorder.events.length} hit${recorder.events.length === 1 ? '' : 's'}`;
   }
   takeSummary = summary;
-  setStatus(`${summary} — ▶ Drums to hear it, ▶ Original for your take`);
-  els.playBtn.classList.add('ready');
+  setStatus(`${summary} — ${READY_HINT}`);
+  if (els.aiBtn) els.aiBtn.classList.add('ready');
   updateRecCount();
   updateTransportUI();
 }
@@ -1101,10 +1127,11 @@ function updateTransportUI() {
   els.recBtn.classList.toggle('recording', state === 'recording' || state === 'armed');
   els.recBtn.textContent = state === 'recording' ? '■ Stop' : state === 'armed' ? '■ Cancel' : '● Record';
 
-  els.playBtn.disabled = !!calibration || state === 'recording' || state === 'armed' || (!hasEvents && state !== 'playing');
-  els.playBtn.classList.toggle('playing', state === 'playing');
-  els.playBtn.textContent = state === 'playing' ? '■ Stop' : '▶ Drums';
-  if (els.playBtn.disabled || state === 'playing') els.playBtn.classList.remove('ready');
+  if (els.playBtn) {
+    els.playBtn.disabled = !!calibration || state === 'recording' || state === 'armed' || (!hasEvents && state !== 'playing');
+    els.playBtn.classList.toggle('playing', state === 'playing');
+    els.playBtn.textContent = state === 'playing' ? '■ Stop' : '▶ Drums';
+  }
 
   if (els.origBtn) {
     els.origBtn.disabled = !!calibration || !rawTakeBuffer || state === 'recording' || state === 'armed';
@@ -1121,11 +1148,12 @@ function updateTransportUI() {
   }
   if (els.aiBtn) {
     els.aiBtn.disabled = !hasEvents || state === 'recording' || state === 'armed' || !!calibration || aiBusy;
-    els.aiBtn.textContent = aiBusy ? '✨ Composing…' : '✨ Compose with AI';
+    els.aiBtn.textContent = aiBusy ? '✨ Generating…' : '✨ Generate AI track';
+    if (els.aiBtn.disabled) els.aiBtn.classList.remove('ready');
   }
   if (els.aiGenerate) els.aiGenerate.disabled = aiBusy;
   if (els.aiPlayBtn) {
-    els.aiPlayBtn.textContent = aiPlaying ? '■ Stop' : '▶ AI take';
+    els.aiPlayBtn.textContent = aiPlaying ? '■ Stop' : '▶ AI track';
     els.aiPlayBtn.classList.toggle('playing', aiPlaying);
   }
   if (els.bpmInput) els.bpmInput.disabled = state !== 'idle';
@@ -1150,7 +1178,11 @@ document.addEventListener('keydown', (e) => {
     els.recBtn.click();
   } else if (key === ' ' && e.target === document.body) {
     e.preventDefault();
-    if (!els.playBtn.disabled) els.playBtn.click();
+    // Space plays what's most interesting: the AI track once one exists,
+    // the drums loop if that button is enabled, else the original take
+    if (aiUrl && els.aiPlayBtn) els.aiPlayBtn.click();
+    else if (els.playBtn && !els.playBtn.disabled) els.playBtn.click();
+    else if (els.origBtn && !els.origBtn.disabled) els.origBtn.click();
   }
 });
 

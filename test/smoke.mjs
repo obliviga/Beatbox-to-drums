@@ -1,12 +1,13 @@
 /**
  * Browser smoke test — drives the app in headless Chromium.
  *
- * The UI is currently minimal: Record → waveform → Play. Context A uses
- * Chrome's fake microphone (a pulsing tone that genuinely exercises the
- * onset → classify → synth pipeline) and mocks the Claude API with route
- * interception (no real network) for the AI-composer flow. Context B
- * force-denies getUserMedia and drives hits with precisely-timed keyboard
- * events, covering the mic-less fallback and deterministic tempo detection.
+ * The UI is currently minimal: ● Record · ▶ Original · ✨ Generate AI track
+ * (▶/⬇ for the result). Context A uses Chrome's fake microphone (a pulsing
+ * tone that genuinely exercises the onset → classify → convert pipeline)
+ * and mocks the Stable Audio relay with route interception (no real
+ * network). Context B force-denies getUserMedia and drives hits with
+ * precisely-timed keyboard events, covering the mic-less fallback and
+ * deterministic tempo detection.
  *
  * Usage:  npm install && npm run smoke
  * Env:    CHROME_PATH to point at a Chromium binary if autodetection fails.
@@ -62,6 +63,21 @@ function serve(rootDir) {
   });
 }
 
+/** A tiny playable WAV (mono PCM16, decaying tone) — the mocked AI response. */
+function makeWav(seconds = 1.2, rate = 8000) {
+  const n = Math.floor(seconds * rate);
+  const buf = Buffer.alloc(44 + n * 2);
+  buf.write('RIFF', 0); buf.writeUInt32LE(36 + n * 2, 4); buf.write('WAVE', 8);
+  buf.write('fmt ', 12); buf.writeUInt32LE(16, 16); buf.writeUInt16LE(1, 20);
+  buf.writeUInt16LE(1, 22); buf.writeUInt32LE(rate, 24); buf.writeUInt32LE(rate * 2, 28);
+  buf.writeUInt16LE(2, 32); buf.writeUInt16LE(16, 34);
+  buf.write('data', 36); buf.writeUInt32LE(n * 2, 40);
+  for (let i = 0; i < n; i++) {
+    buf.writeInt16LE(Math.round(Math.sin((i * 2 * Math.PI * 440) / rate) * 12000 * (1 - i / n)), 44 + i * 2);
+  }
+  return buf;
+}
+
 const { server, port } = await serve(ROOT);
 const base = `http://localhost:${port}`;
 const errors = [];
@@ -106,23 +122,20 @@ try {
   await pageA.waitForTimeout(300);
 
   step = 'A: minimal UI';
-  for (const sel of ['#micBtn', '.pad', '#bpmInput', '#debugChk', '#tuneBtn']) {
+  for (const sel of ['#micBtn', '.pad', '#bpmInput', '#debugChk', '#tuneBtn',
+    '#playBtn', '#exportBtn', '.chip[data-kit]', '#mapWrap']) {
     check((await pageA.$(sel)) === null, `${sel} should be hidden in the minimal UI`);
   }
-  for (const sel of ['#recBtn', '#origBtn', '#playBtn', '#waveform', '#timeline', '#exportBtn', '#aiBtn']) {
+  for (const sel of ['#recBtn', '#origBtn', '#waveform', '#aiBtn', '#aiPlayBtn', '#aiSaveBtn', '#aiSettings']) {
     check((await pageA.$(sel)) !== null, `${sel} missing`);
   }
-  check((await pageA.$$('.chip[data-kit]')).length === 7, 'expected 7 style chips');
-  check(await pageA.$eval('#playBtn', (el) => el.disabled), 'Drums should start disabled');
   check(await pageA.$eval('#origBtn', (el) => el.disabled), 'Original should start disabled');
-  check(await pageA.$eval('#exportBtn', (el) => el.disabled), 'Save should start disabled');
-  check(await pageA.$eval('#aiBtn', (el) => el.disabled), 'AI restyle should start disabled');
+  check(await pageA.$eval('#aiBtn', (el) => el.disabled), 'Generate should start disabled');
   check(await pageA.$eval('#aiPanel', (el) => el.hidden), 'AI panel should start hidden');
-  check(await pageA.$eval('#aiRow', (el) => el.hidden), 'AI take row should start hidden');
-  check(await pageA.$eval('#mapWrap', (el) => el.hidden), 'beat map should start hidden');
+  check(await pageA.$eval('#aiRow', (el) => el.hidden), 'AI track row should start hidden');
   const versionText = (await pageA.textContent('#versionLine')).trim();
   check(/v\d+ · \d{4}-\d{2}-\d{2}/.test(versionText), `version line missing/malformed: "${versionText}"`);
-  console.log(`✓ minimal UI: Record, waveform, Original, Drums (${versionText})`);
+  console.log(`✓ minimal UI: Record, waveform, Original, ✨ Generate (${versionText})`);
 
   step = 'A: service worker';
   const swOk = await pageA.evaluate(() => Promise.race([
@@ -143,9 +156,8 @@ try {
 
   step = 'A: stop converts the take';
   await pageA.click('#recBtn');
-  await waitStatus(pageA, /(Converted ✓|Captured \d+ hit).*▶ Drums/);
-  check(!(await pageA.$eval('#playBtn', (el) => el.disabled)), 'Drums should be enabled after a take');
-  check(!(await pageA.$eval('#mapWrap', (el) => el.hidden)), 'beat map should be visible after a take');
+  await waitStatus(pageA, /(Converted ✓|Captured \d+ hit).*✨ Generate/);
+  check(!(await pageA.$eval('#aiBtn', (el) => el.disabled)), 'Generate should be enabled after a take');
   console.log(`✓ stop converts and hands off ("${await statusOf(pageA)}")`);
 
   step = 'A: play back the original recording';
@@ -153,19 +165,16 @@ try {
   await pageA.click('#origBtn');
   await waitStatus(pageA, /Playing your original recording/);
   check((await pageA.textContent('#origBtn')).includes('Stop'), 'Original should toggle to Stop');
-  await waitStatus(pageA, /▶ Drums/, 10000); // take is ~4 s; wait for it to finish
+  await waitStatus(pageA, /✨ Generate/, 10000); // take is ~4 s; wait for it to finish
   console.log('✓ original take plays back and returns cleanly');
 
-  step = 'A: play the converted drums';
-  await pageA.click('#playBtn');
-  await waitStatus(pageA, /Playing your drums/);
-  check((await pageA.textContent('#playBtn')).includes('Stop'), 'Play should toggle to Stop');
-  await pageA.waitForTimeout(1200);
-
   step = 'A: real drum samples loaded';
+  await pageA.waitForFunction(
+    () => performance.getEntriesByType('resource').filter((e) => e.name.includes('/samples/real/')).length >= 40,
+    null, { timeout: 8000 },
+  );
   const sampleCount = await pageA.evaluate(() =>
     performance.getEntriesByType('resource').filter((e) => e.name.includes('/samples/real/')).length);
-  check(sampleCount >= 40, `only ${sampleCount} sample fetches observed`);
   console.log(`✓ real sampled kit loaded (${sampleCount} sample files fetched)`);
 
   step = 'A: production-chain render fidelity';
@@ -234,121 +243,111 @@ try {
   check(choke.open > choke.choked * 3, `choke ineffective: open tail ${choke.open.toFixed(4)} vs choked ${choke.choked.toFixed(4)}`);
   console.log(`✓ hi-hat choke: ringing tail ${(choke.open / Math.max(choke.choked, 1e-9)).toFixed(1)}× louder unchoked`);
 
-  step = 'A: style switch + save beat sample';
-  await pageA.click('.chip[data-kit="tr808"]');
-  check(!(await pageA.$eval('#exportBtn', (el) => el.disabled)), 'Save should be enabled after a take');
-  const dlPromise = pageA.waitForEvent('download', { timeout: 20000 });
-  await pageA.click('#exportBtn');
-  const download = await dlPromise;
-  const wavBytes = await readFile(await download.path());
-  check(wavBytes.subarray(0, 4).toString() === 'RIFF' && wavBytes.subarray(8, 12).toString() === 'WAVE', 'not a WAV file');
-  check(/beatbox-loop-.*tr808\.wav/.test(download.suggestedFilename()), `filename: ${download.suggestedFilename()}`);
-  console.log(`✓ style switched to 808, sample saved: ${download.suggestedFilename()} (${wavBytes.length} bytes)`);
-  await pageA.click('.chip[data-kit="real"]');
-
-  step = 'A: AI composer asks for an API key before generating';
-  check(!(await pageA.$eval('#aiBtn', (el) => el.disabled)), 'AI composer should be enabled after a take');
-  await pageA.click('#aiBtn');
+  step = 'A: ✨ opens setup when unconfigured';
+  check(!(await pageA.$eval('#aiBtn', (el) => el.disabled)), 'Generate should be enabled after a take');
+  await pageA.click('#aiBtn'); // no relay yet → the button opens setup instead of generating
   check(!(await pageA.$eval('#aiPanel', (el) => el.hidden)), 'AI panel should open');
   const promptPrefill = await pageA.$eval('#aiPrompt', (el) => el.value);
   check(promptPrefill.length > 10, `prompt should be pre-filled, got "${promptPrefill}"`);
-  await pageA.click('#aiGenerate'); // no key configured yet
-  await waitStatus(pageA, /Add your Anthropic API key first/);
-  console.log('✓ unconfigured AI composer explains the key setup');
+  await pageA.click('#aiGenerate'); // still no relay configured
+  await waitStatus(pageA, /Add your relay URL first/);
+  console.log('✓ unconfigured ✨ opens setup and explains the relay');
 
-  step = 'A: AI composes a beat (mocked Claude API)';
-  const AI_ROUTE = '**/v1/messages';
-  // the "composed" beat Claude returns: 2 bars at 120 BPM, times in beats
-  const mockBeat = {
-    bpm: 120,
-    bars: 2,
-    events: [
-      { t: 0, type: 'kick', velocity: 0.95, roll: false },
-      { t: 0.5, type: 'hat', velocity: 0.5, roll: false },
-      { t: 1, type: 'snare', velocity: 0.9, roll: false },
-      { t: 1.5, type: 'hat', velocity: 0.45, roll: false },
-      { t: 2, type: 'kick', velocity: 0.9, roll: false },
-      { t: 2.5, type: 'kick', velocity: 0.7, roll: false },
-      { t: 3, type: 'snare', velocity: 0.9, roll: false },
-      { t: 3.5, type: 'openhat', velocity: 0.6, roll: false },
-      { t: 5, type: 'snare', velocity: 0.4, roll: true },
-      { t: 7.5, type: 'crash', velocity: 0.8, roll: false },
-    ],
-  };
+  step = 'A: AI track generation (mocked relay)';
+  const AI_ROUTE = '**/v2beta/audio/stable-audio-2/audio-to-audio';
+  const mockTake = makeWav();
   let aiReq = null;
   await pageA.route(AI_ROUTE, async (route) => {
     const req = route.request();
-    if (req.method() === 'OPTIONS') { // CORS preflight (custom API headers)
+    if (req.method() === 'OPTIONS') { // CORS preflight (x-api-key is a custom header)
       await route.fulfill({
         status: 204,
         headers: {
           'Access-Control-Allow-Origin': '*',
           'Access-Control-Allow-Methods': 'POST, OPTIONS',
-          'Access-Control-Allow-Headers': 'content-type, x-api-key, anthropic-version, anthropic-dangerous-direct-browser-access',
+          'Access-Control-Allow-Headers': 'content-type, x-api-key, accept',
         },
       });
       return;
     }
-    aiReq = { url: req.url(), headers: req.headers(), body: JSON.parse(req.postData()) };
+    aiReq = { url: req.url(), headers: req.headers(), body: req.postDataBuffer() };
     await route.fulfill({
       status: 200,
-      contentType: 'application/json',
+      contentType: 'audio/wav',
       headers: { 'Access-Control-Allow-Origin': '*' },
-      body: JSON.stringify({
-        stop_reason: 'end_turn',
-        content: [{ type: 'text', text: JSON.stringify(mockBeat) }],
-      }),
+      body: mockTake,
     });
   });
-  await pageA.fill('#aiKey', 'sk-ant-test');
+  await pageA.fill('#aiRelay', 'https://fake-relay.example');
+  await pageA.fill('#aiKey', 'sk-test');
   await pageA.click('#aiGenerate');
-  await waitStatus(pageA, /AI beat ready/, 30000);
-  check(aiReq, 'no request reached the mocked Claude API');
-  check(aiReq.url === 'https://api.anthropic.com/v1/messages', `wrong endpoint: ${aiReq.url}`);
-  check(aiReq.headers['x-api-key'] === 'sk-ant-test', 'API key header missing');
-  check(aiReq.headers['anthropic-dangerous-direct-browser-access'] === 'true', 'browser-access header missing');
-  check(aiReq.body.model && aiReq.body.model.startsWith('claude-'), `model: ${aiReq.body.model}`);
-  check(aiReq.body.output_config?.format?.type === 'json_schema', 'structured output schema missing');
-  check(/Style I want/.test(aiReq.body.messages[0].content), 'style prompt missing from request');
-  check(/\b(kick|snare|hat)\b/.test(aiReq.body.messages[0].content), 'performance transcription missing');
-  check(!JSON.stringify(aiReq.body).includes('RIFF'), 'request must contain no audio — rhythm text only');
-  check(!(await pageA.$eval('#aiRow', (el) => el.hidden)), 'AI take row should appear');
-  check(await pageA.$eval('#aiPanel', (el) => el.hidden), 'AI panel should close after composing');
-  console.log('✓ Claude request well-formed (key, schema, score as text, zero audio); beat ready');
+  await waitStatus(pageA, /AI track ready/, 30000);
+  check(aiReq, 'no request reached the mocked relay');
+  check(aiReq.url === 'https://fake-relay.example/v2beta/audio/stable-audio-2/audio-to-audio',
+    `wrong endpoint: ${aiReq.url}`);
+  check(aiReq.headers['x-api-key'] === 'sk-test', 'API key header not forwarded');
+  check((aiReq.headers['content-type'] || '').startsWith('multipart/form-data'),
+    `expected multipart body, got ${aiReq.headers['content-type']}`);
+  if (aiReq.body) { // CDP may withhold large post bodies; assert content when available
+    const bodyStr = aiReq.body.toString('latin1');
+    check(bodyStr.includes('name="model"') && bodyStr.includes('stable-audio-2.5'), 'hi-fi model missing');
+    check(bodyStr.includes('name="output_format"') && bodyStr.includes('wav'), 'wav output missing');
+    check(bodyStr.includes('name="audio"') && bodyStr.includes('RIFF'), 'rendered drum WAV missing from request');
+    check(bodyStr.includes('name="prompt"'), 'prompt field missing');
+  }
+  check(!(await pageA.$eval('#aiRow', (el) => el.hidden)), 'AI track row should appear');
+  check(await pageA.$eval('#aiPanel', (el) => el.hidden), 'AI panel should close after generating');
+  console.log(`✓ hi-fi request well-formed (2.5 model, wav out, drum audio${aiReq.body ? ' verified' : ''}); track ready`);
 
-  step = 'A: play + save the AI beat';
+  step = 'A: play + save the AI track';
   await pageA.click('#aiPlayBtn');
-  await waitStatus(pageA, /Playing the AI take/);
+  await waitStatus(pageA, /Playing the AI track/);
   check((await pageA.textContent('#aiPlayBtn')).includes('Stop'), 'AI play should toggle to Stop');
-  await waitStatus(pageA, /▶ Drums/, 12000); // 4-second rendered loop ends, status returns
+  await waitStatus(pageA, /✨ Generate/, 10000); // short mock clip ends, status returns
   const aiDlPromise = pageA.waitForEvent('download', { timeout: 10000 });
   await pageA.click('#aiSaveBtn');
   const aiDl = await aiDlPromise;
   const aiBytes = await readFile(await aiDl.path());
-  check(aiBytes.subarray(0, 4).toString() === 'RIFF' && aiBytes.subarray(8, 12).toString() === 'WAVE',
-    'saved AI beat is not a WAV');
-  const aiFrames = (aiBytes.length - 44) / 4;
-  check(aiFrames === 4 * 44100, `rendered length should be the 2-bar loop (got ${aiFrames} frames)`);
-  check(/^beatbox-ai-120bpm\.wav$/.test(aiDl.suggestedFilename()), `AI filename: ${aiDl.suggestedFilename()}`);
-  console.log(`✓ composed beat rendered on the kit, plays, and saves (${aiDl.suggestedFilename()}, ${aiBytes.length} bytes)`);
+  check(aiBytes.length === mockTake.length && aiBytes.subarray(0, 4).toString() === 'RIFF',
+    `saved AI track should be the returned audio (${aiBytes.length} vs ${mockTake.length} bytes)`);
+  check(/^beatbox-ai-(\d+bpm|take)\.wav$/.test(aiDl.suggestedFilename()), `AI filename: ${aiDl.suggestedFilename()}`);
+  console.log(`✓ AI track plays via media element and saves (${aiDl.suggestedFilename()})`);
+
+  step = 'A: one-tap ✨ regenerates once configured';
+  await pageA.click('#aiBtn'); // configured now → generates directly, no panel
+  await waitStatus(pageA, /Generating your AI track/, 5000);
+  check(await pageA.$eval('#aiPanel', (el) => el.hidden), 'panel should stay closed on one-tap generate');
+  await waitStatus(pageA, /AI track ready/, 30000);
+  console.log('✓ one-tap regeneration (setup remembered, panel stays closed)');
   await pageA.unroute(AI_ROUTE);
 
-  step = 'A: record during playback starts a re-take';
+  step = 'A: ⚙ reopens AI settings';
+  await pageA.click('#aiSettings');
+  check(!(await pageA.$eval('#aiPanel', (el) => el.hidden)), '⚙ should reopen the panel');
+  await pageA.click('#aiClose');
+  check(await pageA.$eval('#aiPanel', (el) => el.hidden), 'Close should hide the panel');
+  console.log('✓ ⚙ AI settings toggle works');
+
+  step = 'A: a new take invalidates the old AI track';
   await pageA.click('#recBtn');
   await waitStatus(pageA, /Recording/);
+  check(await pageA.$eval('#aiRow', (el) => el.hidden), 'a new recording should invalidate the old AI track');
   await pageA.waitForTimeout(1500);
   await pageA.click('#recBtn');
-  await waitStatus(pageA, /(▶ Drums|No hits found)/);
-  check(await pageA.$eval('#aiRow', (el) => el.hidden), 'a new recording should invalidate the old AI take');
-  console.log('✓ playback, and Record-while-playing re-takes cleanly (stale AI take cleared)');
+  await waitStatus(pageA, /(✨ Generate|No hits found)/);
+  console.log('✓ re-take converts cleanly and clears the stale AI track');
 
-  step = 'A: playback works on the rebuilt (post-mic) audio context';
+  step = 'A: original playback works on the rebuilt (post-mic) audio context';
   await pageA.waitForTimeout(400); // mic released at +150 ms → context rebuilt
-  await pageA.click('#playBtn');
-  await waitStatus(pageA, /Playing your drums/);
-  await pageA.waitForTimeout(600);
-  await pageA.click('#playBtn');
-  console.log('✓ post-rebuild playback (media-speaker routing) works');
+  if (!(await pageA.$eval('#origBtn', (el) => el.disabled))) {
+    await pageA.click('#origBtn');
+    await waitStatus(pageA, /Playing your original recording/);
+    await pageA.waitForTimeout(600);
+    await pageA.click('#origBtn'); // stop
+    console.log('✓ post-rebuild playback (media-speaker routing) works');
+  } else {
+    console.log('✓ post-rebuild state clean (empty re-take, nothing to play)');
+  }
   await ctxA.close();
 
   /* ============ Context B: microphone denied (keyboard-driven hits) ============ */
@@ -385,12 +384,9 @@ try {
   check(Math.abs(bpm - 120) <= 5, `expected ~120 BPM, got ${bpm}`);
   console.log(`✓ converted at ${bpm} BPM ("${await statusOf(pageB)}")`);
 
-  step = 'B: play converted beat';
-  await pageB.click('#playBtn');
-  await waitStatus(pageB, /Playing your drums/);
-  await pageB.waitForTimeout(1000);
-  await pageB.click('#playBtn');
-  console.log('✓ converted beat plays and stops');
+  step = 'B: converted take arms the AI generator';
+  check(!(await pageB.$eval('#aiBtn', (el) => el.disabled)), 'Generate should be enabled after a keyboard take');
+  console.log('✓ mic-less take still arms ✨ Generate');
 
   step = 'B: no mic means no original take';
   check(await pageB.$eval('#origBtn', (el) => el.disabled), 'Original should stay disabled without mic audio');

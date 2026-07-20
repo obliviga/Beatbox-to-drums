@@ -25,18 +25,22 @@
       <p id="statusText" class="status" aria-live="polite">Press Record and beatbox — “B” kick · “Pss” snare · “Ts” hi-hat</p>
     </section>
 
-    <section class="big-controls three">
+    <section class="big-controls">
       <button id="recBtn" class="big-btn rec">● Record</button>
       <button id="origBtn" class="big-btn orig" disabled>▶ Original</button>
+      <!-- ▶ Drums (the sample-kit conversion) is hidden while the UI is
+           pared to Record / Original / AI — it still renders internally as
+           the AI's input. Uncomment to bring direct playback back:
       <button id="playBtn" class="big-btn play" disabled>▶ Drums</button>
+      -->
     </section>
 
-    <!-- the beat map: what the conversion heard, drum by drum -->
+    <!-- Hidden with the minimal three-button UI (uncomment to restore):
+         the beat map and the kit picker + local WAV export.
     <section id="mapWrap" class="timeline-wrap map-wrap" hidden>
       <canvas id="timeline" aria-label="Converted beat map"></canvas>
     </section>
 
-    <!-- style = which kit renders your beat; switch it live, then save -->
     <section class="style-section">
       <div class="chips chips-sm style-kits" role="group" aria-label="Drum style">
         <button class="chip active" data-kit="real">Real Kit</button>
@@ -49,32 +53,37 @@
       </div>
       <button id="exportBtn" class="save-btn" disabled>⬇ Save beat sample (WAV)</button>
     </section>
+    -->
 
-    <!-- optional: Claude composes one brand-new beat from the take's
-         rhythm transcription (text — no audio leaves the device), and
-         the app performs it on the current kit -->
+    <!-- the ✨ engine: your take is converted to drums on-device, then that
+         drum track (never your voice) goes to a generative audio model
+         (Stable Audio 2.5) which returns one hi-fi AI track -->
     <section class="ai-section">
-      <button id="aiBtn" class="save-btn ai-btn" disabled>✨ Compose with AI</button>
+      <button id="aiBtn" class="save-btn ai-btn" disabled>✨ Generate AI track</button>
       <div id="aiPanel" class="ai-panel" hidden>
         <label class="ai-field">Style prompt
           <input id="aiPrompt" type="text" autocomplete="off" />
         </label>
-        <label class="ai-field">Anthropic API key
-          <input id="aiKey" type="password" autocomplete="off" placeholder="sk-ant-…" />
+        <label class="ai-field">Relay URL
+          <input id="aiRelay" type="text" autocomplete="off" placeholder="https://your-relay.workers.dev" />
         </label>
-        <p class="hint-line">Claude writes a brand-new beat from your performance and this
-        kit plays it. One tap = one beat with your own key (a few cents each) —
-        get one at <code>console.anthropic.com</code>. Only your beat’s rhythm is
-        sent, as text; your audio never leaves the device.</p>
+        <label class="ai-field">Stability API key
+          <input id="aiKey" type="password" autocomplete="off" placeholder="sk-… (optional if stored in the relay)" />
+        </label>
+        <p class="hint-line">One tap = one hi-fi AI track (Stable Audio 2.5, ~20¢) with
+        your own key from <code>platform.stability.ai</code>. What’s uploaded is the
+        converted drum loop — never your voice recording. Relay setup takes
+        ~2 minutes: see <code>worker/relay.js</code> in the repo.</p>
         <div class="ai-actions">
-          <button id="aiGenerate" class="save-btn small">✨ Compose one beat</button>
+          <button id="aiGenerate" class="save-btn small">✨ Generate one track</button>
           <button id="aiClose" class="save-btn small ghost">Close</button>
         </div>
       </div>
       <div id="aiRow" class="ai-actions" hidden>
-        <button id="aiPlayBtn" class="big-btn play small">▶ AI take</button>
-        <button id="aiSaveBtn" class="save-btn small">⬇ Save AI take</button>
+        <button id="aiPlayBtn" class="big-btn play small">▶ AI track</button>
+        <button id="aiSaveBtn" class="save-btn small">⬇ Save AI track</button>
       </div>
+      <button id="aiSettings" class="ai-settings" type="button">⚙ AI settings</button>
     </section>
 
     <!-- Voice tuning is no longer needed: conversion now analyzes the whole
@@ -87,8 +96,8 @@
 
 
     <footer class="footer">
-      <p>Runs in your browser — your audio never leaves your device.
-      ✨ Compose sends only your beat’s rhythm (as text) to Claude.</p>
+      <p>Your voice recording never leaves your device — ✨ Generate uploads
+      only the converted drum track to the AI, with your own key.</p>
       <p id="versionLine" class="version"></p>
     </footer>
 

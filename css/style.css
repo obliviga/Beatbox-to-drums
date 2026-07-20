@@ -407,6 +407,25 @@ input[type="number"]:disabled { opacity: 0.4; }
 
 .ai-section { display: flex; flex-direction: column; gap: 10px; }
 .ai-btn { color: #d7a8ff; border-color: rgba(196, 140, 255, 0.45); }
+.ai-btn.ready {
+  border-color: #c48cff;
+  animation: ai-ready-pulse 1.6s ease-out infinite;
+}
+@keyframes ai-ready-pulse {
+  0%   { box-shadow: 0 0 0 0 rgba(196, 140, 255, 0.4); }
+  70%  { box-shadow: 0 0 0 14px rgba(196, 140, 255, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(196, 140, 255, 0); }
+}
+.ai-settings {
+  align-self: center;
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  font-size: 0.8rem;
+  padding: 4px 8px;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
 .ai-panel {
   background: var(--bg-card);
   border: 1px solid #2c3147;

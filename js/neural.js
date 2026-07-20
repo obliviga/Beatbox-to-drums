@@ -1,26 +1,33 @@
 /**
- * AI composer — Claude writes the beat, your kit performs it.
+ * The ✨ AI engines. Two live in this file:
  *
- * The app transcribes the user's beatboxed take into a drum score (hit
- * times, drums, velocities, tempo — plain text), asks the Claude API to
- * compose ONE new beat from it, and gets back a structured JSON pattern
- * that the app renders through its own sampled kit + production chain.
+ * 1. AUDIO GENERATOR (active in the UI) — generateAudio() sends the
+ *    rendered drum conversion to Stability's Stable Audio 2.5
+ *    (audio-to-audio, 44.1 kHz stereo) and returns one fully
+ *    AI-generated, high-fidelity WAV that follows the user's performed
+ *    rhythm. Browsers can't call api.stability.ai directly (no CORS),
+ *    so requests go through the user's own tiny relay
+ *    (worker/relay.js — a copy-paste Cloudflare Worker).
  *
- * Privacy: no audio ever leaves the device — only the rhythm
- * transcription above is sent, and only when the user taps Compose.
- * The user's own Anthropic API key is used, stored in localStorage and
- * sent only to api.anthropic.com (the API allows direct browser calls
- * via the anthropic-dangerous-direct-browser-access header, so there is
- * no relay or backend anywhere).
+ * 2. COMPOSER (dormant, kept unit-tested) — composeBeat() asks the
+ *    Claude API to write a brand-new pattern as JSON for the sampled
+ *    kit to perform. No audio leaves the device on this path.
+ *
+ * Privacy: the audio generator uploads the rendered drum loop (never
+ * the raw voice recording), only when the user taps Generate, using
+ * the user's own API key. Settings live in localStorage.
  */
 
-const CONFIG_KEY = 'b2d-neural-v2';
+const CONFIG_KEY = 'b2d-neural-v3';
 const API_URL = 'https://api.anthropic.com/v1/messages';
 const API_VERSION = '2023-06-01';
+const AUDIO_API_PATH = '/v2beta/audio/stable-audio-2/audio-to-audio';
 
+export const AUDIO_MODEL = 'stable-audio-2.5'; // highest-fidelity tier
+export const DEFAULT_STRENGTH = 0.65; // how far the AI may stray from the input
 export const DEFAULT_MODEL = 'claude-opus-4-8';
 export const DEFAULT_PROMPT =
-  'punchy modern drum break — tight low end, crisp hi-hats, a human feel, one tasteful fill';
+  'punchy studio drum break, acoustic kit, tight low end, crisp hi-hats, produced, high fidelity, no melody';
 
 export const DRUM_TYPES = ['kick', 'snare', 'hat', 'openhat', 'tom', 'tomfloor', 'rimshot', 'crash'];
 
@@ -54,12 +61,13 @@ export function loadNeuralConfig() {
   try {
     const c = JSON.parse(localStorage.getItem(CONFIG_KEY)) || {};
     return {
+      relayUrl: typeof c.relayUrl === 'string' ? c.relayUrl : '',
       apiKey: typeof c.apiKey === 'string' ? c.apiKey : '',
       prompt: typeof c.prompt === 'string' && c.prompt.trim() ? c.prompt : DEFAULT_PROMPT,
       model: typeof c.model === 'string' && c.model.trim() ? c.model : DEFAULT_MODEL,
     };
   } catch {
-    return { apiKey: '', prompt: DEFAULT_PROMPT, model: DEFAULT_MODEL };
+    return { relayUrl: '', apiKey: '', prompt: DEFAULT_PROMPT, model: DEFAULT_MODEL };
   }
 }
 
@@ -69,8 +77,69 @@ export function saveNeuralConfig(config) {
   } catch { /* private mode — settings just won't persist */ }
 }
 
+/** The audio generator needs the relay; the key may live in the worker. */
 export function isConfigured(config) {
-  return !!(config.apiKey && config.apiKey.trim());
+  return !!(config.relayUrl && config.relayUrl.trim());
+}
+
+/** Normalize the relay/base URL and append the audio API path. */
+export function buildEndpoint(relayUrl) {
+  const base = (relayUrl || '').trim().replace(/\/+$/, '');
+  if (!base) return null;
+  const withProto = /^https?:\/\//i.test(base) ? base : `https://${base}`;
+  return withProto + AUDIO_API_PATH;
+}
+
+/**
+ * Generate one high-fidelity AI track from the rendered beat.
+ * @param {object} opts
+ * @param {ArrayBuffer} opts.wav — the beat, rendered as WAV
+ * @param {string} opts.prompt
+ * @param {number} opts.strength — 0..1, how far from the input to stray
+ * @param {number} opts.durationSec — requested output length
+ * @param {string} opts.relayUrl
+ * @param {string} [opts.apiKey] — forwarded if the relay has no stored key
+ * @param {typeof fetch} [opts.fetchImpl] — injectable for tests
+ * @returns {Promise<{blob: Blob, type: string}>}
+ */
+export async function generateAudio({
+  wav, prompt, strength, durationSec, relayUrl, apiKey = '', fetchImpl = fetch,
+}) {
+  const endpoint = buildEndpoint(relayUrl);
+  if (!endpoint) throw new Error('No relay URL configured.');
+
+  const form = new FormData();
+  form.append('prompt', prompt);
+  form.append('audio', new Blob([wav], { type: 'audio/wav' }), 'beat.wav');
+  form.append('model', AUDIO_MODEL);
+  form.append('strength', String(Math.min(1, Math.max(0.05, strength))));
+  form.append('duration', String(Math.min(47, Math.max(6, Math.round(durationSec)))));
+  form.append('output_format', 'wav'); // full fidelity — no lossy step
+
+  const headers = { Accept: 'audio/*' };
+  if (apiKey && apiKey.trim()) headers['x-api-key'] = apiKey.trim();
+
+  let res;
+  try {
+    res = await fetchImpl(endpoint, { method: 'POST', headers, body: form });
+  } catch (err) {
+    throw new Error(`Couldn’t reach the relay (${(err && err.message) || 'network error'}). Check the relay URL.`);
+  }
+  if (!res.ok) {
+    let detail = '';
+    try { detail = (await res.text()).slice(0, 300); } catch { /* opaque */ }
+    if (res.status === 401 || res.status === 403) {
+      throw new Error('The API key was rejected — check it (and your relay setup).');
+    }
+    if (res.status === 402) {
+      throw new Error('Out of API credits — top up at platform.stability.ai.');
+    }
+    throw new Error(`Generation failed (HTTP ${res.status}). ${detail}`);
+  }
+  const type = res.headers.get('content-type') || 'audio/wav';
+  const blob = await res.blob();
+  if (!blob.size) throw new Error('The model returned empty audio — try again.');
+  return { blob, type };
 }
 
 /**
