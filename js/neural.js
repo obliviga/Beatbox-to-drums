@@ -57,18 +57,28 @@ export const BEAT_SCHEMA = {
   },
 };
 
+// Optional dev-time defaults, injected from js/local-config.js (a gitignored
+// file — see js/local-config.example.js). They fill fields the user hasn't
+// saved, so a local build can hardcode the relay URL without ever committing
+// it. Explicitly saved settings always win.
+let localDefaults = {};
+export function setLocalDefaults(defaults) {
+  localDefaults = defaults && typeof defaults === 'object' ? defaults : {};
+}
+
+const str = (v) => (typeof v === 'string' ? v.trim() : '');
+
 export function loadNeuralConfig() {
+  let c = {};
   try {
-    const c = JSON.parse(localStorage.getItem(CONFIG_KEY)) || {};
-    return {
-      relayUrl: typeof c.relayUrl === 'string' ? c.relayUrl : '',
-      apiKey: typeof c.apiKey === 'string' ? c.apiKey : '',
-      prompt: typeof c.prompt === 'string' && c.prompt.trim() ? c.prompt : DEFAULT_PROMPT,
-      model: typeof c.model === 'string' && c.model.trim() ? c.model : DEFAULT_MODEL,
-    };
-  } catch {
-    return { relayUrl: '', apiKey: '', prompt: DEFAULT_PROMPT, model: DEFAULT_MODEL };
-  }
+    c = JSON.parse(localStorage.getItem(CONFIG_KEY)) || {};
+  } catch { /* no storage — local defaults still apply */ }
+  return {
+    relayUrl: str(c.relayUrl) || str(localDefaults.relayUrl),
+    apiKey: str(c.apiKey) || str(localDefaults.apiKey),
+    prompt: str(c.prompt) || str(localDefaults.prompt) || DEFAULT_PROMPT,
+    model: str(c.model) || DEFAULT_MODEL,
+  };
 }
 
 export function saveNeuralConfig(config) {

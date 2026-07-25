@@ -98,7 +98,14 @@ const browser = await chromium.launch({
 
 const wirePage = (page) => {
   page.on('pageerror', (e) => errors.push(`pageerror: ${e.message}`));
-  page.on('console', (m) => { if (m.type() === 'error') errors.push(`console.error: ${m.text()}`); });
+  page.on('console', (m) => {
+    if (m.type() !== 'error') return;
+    // js/local-config.js is an OPTIONAL gitignored file; its 404 on a clean
+    // checkout is expected (main.js catches the failed import)
+    const loc = (m.location() && m.location().url) || '';
+    if (m.text().includes('local-config.js') || loc.includes('local-config.js')) return;
+    errors.push(`console.error: ${m.text()}`);
+  });
 };
 const statusOf = async (page) => (await page.textContent('#statusText')).trim();
 const waitStatus = (page, re, timeout = 6000) =>

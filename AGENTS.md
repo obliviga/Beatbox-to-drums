@@ -88,6 +88,12 @@ Learned over the whole project — follow these unless told otherwise:
    test (`npm install && npm run smoke`). CI runs unit tests only (Node 22).
 9. **Two audio paths on purpose** (§9): Web Audio graph for drums; `<audio>` media elements for
    Original and AI playback. Never "simplify" this — it exists because of phone speaker routing.
+10. **`js/local-config.js` is gitignored by design and must never be committed** (nor may the
+    owner's relay URL or any API key be hardcoded anywhere tracked). It's the optional dev-time
+    file (see `js/local-config.example.js`) that pre-fills the ✨ settings via
+    `setLocalDefaults()`; the public deployment ships without it, so downloads of the repo can't
+    spend the owner's credits. Saved ⚙-panel settings always override it. The smoke test
+    deliberately ignores its 404 console error on clean checkouts.
 
 ## 4. Repo map
 

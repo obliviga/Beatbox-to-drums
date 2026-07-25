@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   buildScore, composeBeat, validateBeat, loadNeuralConfig, saveNeuralConfig, isConfigured,
-  buildEndpoint, generateAudio, AUDIO_MODEL,
+  buildEndpoint, generateAudio, AUDIO_MODEL, setLocalDefaults,
   DEFAULT_PROMPT, DEFAULT_MODEL, BEAT_SCHEMA, DRUM_TYPES,
 } from '../../js/neural.js';
 
@@ -30,6 +30,29 @@ test('config round-trips through a localStorage shim', () => {
   assert.equal(isConfigured(cfg), true); // relay present = configured (key may live in the worker)
   assert.equal(isConfigured({ relayUrl: '', apiKey: 'sk-x' }), false);
   delete globalThis.localStorage;
+});
+
+test('local-config defaults fill unsaved fields; saved values always win', () => {
+  setLocalDefaults({ relayUrl: ' https://dev-relay.example ', apiKey: 'sk-local', prompt: '' });
+  const cfg = loadNeuralConfig(); // no localStorage at all
+  assert.equal(cfg.relayUrl, 'https://dev-relay.example'); // trimmed local default
+  assert.equal(cfg.apiKey, 'sk-local');
+  assert.equal(cfg.prompt, DEFAULT_PROMPT); // blank local prompt falls through
+  assert.equal(isConfigured(cfg), true); // a local relay makes the app born-configured
+
+  const store = new Map();
+  globalThis.localStorage = {
+    getItem: (k) => (store.has(k) ? store.get(k) : null),
+    setItem: (k, v) => store.set(k, String(v)),
+  };
+  saveNeuralConfig({ relayUrl: 'https://saved.example', apiKey: '' });
+  const cfg2 = loadNeuralConfig();
+  assert.equal(cfg2.relayUrl, 'https://saved.example'); // saved beats local
+  assert.equal(cfg2.apiKey, 'sk-local'); // blank saved field → local fills
+  delete globalThis.localStorage;
+
+  setLocalDefaults(null); // reset for the other tests
+  assert.equal(loadNeuralConfig().relayUrl, '');
 });
 
 test('buildEndpoint normalizes relay URLs onto the audio API path', () => {

@@ -23,7 +23,18 @@ import { analyzeClip } from './clip-analysis.js';
 import { VERSION } from './version.js';
 import {
   loadNeuralConfig, saveNeuralConfig, isConfigured, generateAudio, DEFAULT_STRENGTH,
+  setLocalDefaults,
 } from './neural.js';
+
+// Optional, gitignored dev config (js/local-config.js — see the .example file):
+// pre-fills the ✨ settings (relay URL etc.) on local builds so nothing secret
+// ever needs committing. Missing file = public deployment = silently skipped.
+import('./local-config.js')
+  .then((m) => {
+    setLocalDefaults(m.LOCAL_CONFIG);
+    updateTransportUI();
+  })
+  .catch(() => { /* no local config — the ⚙ panel handles setup */ });
 
 const CAPTURE_SAMPLES = 1024; // keep in sync with js/worklet/onset-processor.js
 const SETTINGS_KEY = 'b2d-settings';
