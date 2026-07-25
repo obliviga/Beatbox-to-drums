@@ -130,12 +130,13 @@ try {
 
   step = 'A: minimal UI';
   for (const sel of ['#micBtn', '.pad', '#bpmInput', '#debugChk', '#tuneBtn',
-    '#playBtn', '#exportBtn', '.chip[data-kit]', '#mapWrap']) {
+    '#exportBtn', '.chip[data-kit]', '#mapWrap']) {
     check((await pageA.$(sel)) === null, `${sel} should be hidden in the minimal UI`);
   }
-  for (const sel of ['#recBtn', '#origBtn', '#waveform', '#aiBtn', '#aiPlayBtn', '#aiSaveBtn', '#aiSettings']) {
+  for (const sel of ['#recBtn', '#origBtn', '#playBtn', '#waveform', '#aiBtn', '#aiPlayBtn', '#aiSaveBtn', '#aiSettings', '#aiStrength']) {
     check((await pageA.$(sel)) !== null, `${sel} missing`);
   }
+  check(await pageA.$eval('#playBtn', (el) => el.disabled), 'Drums should start disabled');
   check(await pageA.$eval('#origBtn', (el) => el.disabled), 'Original should start disabled');
   check(await pageA.$eval('#aiBtn', (el) => el.disabled), 'Generate should start disabled');
   check(await pageA.$eval('#aiPanel', (el) => el.hidden), 'AI panel should start hidden');
@@ -166,6 +167,15 @@ try {
   await waitStatus(pageA, /(Converted ✓|Captured \d+ hit).*✨ Generate/);
   check(!(await pageA.$eval('#aiBtn', (el) => el.disabled)), 'Generate should be enabled after a take');
   console.log(`✓ stop converts and hands off ("${await statusOf(pageA)}")`);
+
+  step = 'A: ▶ Drums plays the conversion (what ✨ uploads)';
+  check(!(await pageA.$eval('#playBtn', (el) => el.disabled)), 'Drums should be enabled after a take');
+  await pageA.click('#playBtn');
+  await waitStatus(pageA, /Playing your drums/);
+  check((await pageA.textContent('#playBtn')).includes('Stop'), 'Drums should toggle to Stop');
+  await pageA.waitForTimeout(1200);
+  await pageA.click('#playBtn'); // stop
+  console.log('✓ ▶ Drums previews the AI input');
 
   step = 'A: play back the original recording';
   await pageA.waitForFunction(() => !document.getElementById('origBtn').disabled, null, { timeout: 3000 });
@@ -287,6 +297,10 @@ try {
   });
   await pageA.fill('#aiRelay', 'https://fake-relay.example');
   await pageA.fill('#aiKey', 'sk-test');
+  await pageA.$eval('#aiStrength', (el) => { // drag "faithfulness" toward the beat
+    el.value = '0.35';
+    el.dispatchEvent(new Event('input'));
+  });
   await pageA.click('#aiGenerate');
   await waitStatus(pageA, /AI track ready/, 30000);
   check(aiReq, 'no request reached the mocked relay');
@@ -301,6 +315,7 @@ try {
     check(bodyStr.includes('name="output_format"') && bodyStr.includes('wav'), 'wav output missing');
     check(bodyStr.includes('name="audio"') && bodyStr.includes('RIFF'), 'rendered drum WAV missing from request');
     check(bodyStr.includes('name="prompt"'), 'prompt field missing');
+    check(/name="strength"\r\n\r\n0\.35/.test(bodyStr), 'faithfulness slider value not forwarded');
   }
   check(!(await pageA.$eval('#aiRow', (el) => el.hidden)), 'AI track row should appear');
   check(await pageA.$eval('#aiPanel', (el) => el.hidden), 'AI panel should close after generating');

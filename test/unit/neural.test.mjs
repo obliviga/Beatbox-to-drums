@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {
   buildScore, composeBeat, validateBeat, loadNeuralConfig, saveNeuralConfig, isConfigured,
   buildEndpoint, generateAudio, AUDIO_MODEL, setLocalDefaults,
-  DEFAULT_PROMPT, DEFAULT_MODEL, BEAT_SCHEMA, DRUM_TYPES,
+  DEFAULT_PROMPT, DEFAULT_MODEL, DEFAULT_STRENGTH, BEAT_SCHEMA, DRUM_TYPES,
 } from '../../js/neural.js';
 
 test('config load falls back to defaults without localStorage', () => {
@@ -12,6 +12,7 @@ test('config load falls back to defaults without localStorage', () => {
   assert.equal(cfg.model, DEFAULT_MODEL);
   assert.equal(cfg.relayUrl, '');
   assert.equal(cfg.apiKey, '');
+  assert.equal(cfg.strength, DEFAULT_STRENGTH);
   assert.equal(isConfigured(cfg), false);
 });
 
@@ -21,14 +22,18 @@ test('config round-trips through a localStorage shim', () => {
     getItem: (k) => (store.has(k) ? store.get(k) : null),
     setItem: (k, v) => store.set(k, String(v)),
   };
-  saveNeuralConfig({ relayUrl: 'https://r.example', apiKey: 'sk-x', prompt: 'jazzy break' });
+  saveNeuralConfig({ relayUrl: 'https://r.example', apiKey: 'sk-x', prompt: 'jazzy break', strength: 0.35 });
   const cfg = loadNeuralConfig();
   assert.equal(cfg.relayUrl, 'https://r.example');
   assert.equal(cfg.apiKey, 'sk-x');
   assert.equal(cfg.prompt, 'jazzy break');
   assert.equal(cfg.model, DEFAULT_MODEL); // unset field falls back
+  assert.equal(cfg.strength, 0.35); // user's faithfulness choice persists
   assert.equal(isConfigured(cfg), true); // relay present = configured (key may live in the worker)
   assert.equal(isConfigured({ relayUrl: '', apiKey: 'sk-x' }), false);
+
+  saveNeuralConfig({ relayUrl: 'https://r.example', strength: 7 }); // junk clamps into range
+  assert.equal(loadNeuralConfig().strength, 0.9);
   delete globalThis.localStorage;
 });
 

@@ -24,7 +24,10 @@ const API_VERSION = '2023-06-01';
 const AUDIO_API_PATH = '/v2beta/audio/stable-audio-2/audio-to-audio';
 
 export const AUDIO_MODEL = 'stable-audio-2.5'; // highest-fidelity tier
-export const DEFAULT_STRENGTH = 0.65; // how far the AI may stray from the input
+// strength = transformation amount (Stability docs: 0 ≈ clone the input,
+// 1 ≈ ignore it). 0.65 let takes drift unrecognizably; default tighter and
+// let the user dial it in the ⚙ panel.
+export const DEFAULT_STRENGTH = 0.5;
 export const DEFAULT_MODEL = 'claude-opus-4-8';
 export const DEFAULT_PROMPT =
   'punchy studio drum break, acoustic kit, tight low end, crisp hi-hats, produced, high fidelity, no melody';
@@ -73,11 +76,13 @@ export function loadNeuralConfig() {
   try {
     c = JSON.parse(localStorage.getItem(CONFIG_KEY)) || {};
   } catch { /* no storage — local defaults still apply */ }
+  const num = (v) => (Number.isFinite(Number(v)) && v !== '' && v !== null ? Number(v) : null);
   return {
     relayUrl: str(c.relayUrl) || str(localDefaults.relayUrl),
     apiKey: str(c.apiKey) || str(localDefaults.apiKey),
     prompt: str(c.prompt) || str(localDefaults.prompt) || DEFAULT_PROMPT,
     model: str(c.model) || DEFAULT_MODEL,
+    strength: Math.min(0.9, Math.max(0.2, num(c.strength) ?? num(localDefaults.strength) ?? DEFAULT_STRENGTH)),
   };
 }
 

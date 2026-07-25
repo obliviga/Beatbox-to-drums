@@ -24,10 +24,12 @@ step, no framework, no backend). The user beatboxes into their phone mic and get
    own Cloudflare Worker relay + API key, returning a fully produced 44.1 kHz stereo WAV that
    follows the performed rhythm. ~$0.20 per generation, user's own key.
 
-Current UI is deliberately minimal (three actions): **● Record**, **▶ Original** (raw take,
-volume-normalized), **✨ Generate AI track** (+ ▶/⬇ for the result, ⚙ for settings). Everything
-else (▶ Drums direct playback, kit picker, beat styles, WAV export, metronome, pads, timeline,
-sensitivity, debug) is **commented out of `index.html`, not deleted** — see §9.
+Current UI is deliberately minimal: **● Record**, **▶ Original** (raw take, volume-normalized),
+**▶ Drums** (the sample-kit conversion — the exact audio ✨ uploads; re-enabled in v23 so a bad
+AI track can be triaged for free), **✨ Generate AI track** (+ ▶/⬇ for the result, ⚙ for
+settings incl. a faithfulness/strength slider). Everything else (kit picker, beat styles, WAV
+export, metronome, pads, timeline, sensitivity, debug) is **commented out of `index.html`, not
+deleted** — see §9.
 
 - **Repo:** `obliviga/Beatbox-to-drums` on GitHub. **Deploy:** GitHub Pages serves `main`
   (root). There is no other deploy step — push to `main` = deploy.
@@ -302,10 +304,14 @@ mic-less keyboard takes) and the dormant "Tune to my voice" k-NN profile
   normalizes: trim, strip trailing `/`, add `https://`). Relay required because
   `api.stability.ai` has no CORS.
 - Multipart form (exact): `prompt`, `audio` (WAV blob named `beat.wav`), `model =
-  'stable-audio-2.5'`, `strength` clamped 0.05–1 (default `DEFAULT_STRENGTH = 0.65`),
-  `duration` clamped 6–47 s (rounded), `output_format = 'wav'` (lossless, deliberately).
-  Header `x-api-key` only when the app holds a key (it may live in the worker instead —
-  that's why `isConfigured` checks **relayUrl only**).
+  'stable-audio-2.5'`, `strength` clamped 0.05–1, `duration` clamped 6–47 s (rounded),
+  `output_format = 'wav'` (lossless, deliberately). Header `x-api-key` only when the app holds
+  a key (it may live in the worker instead — that's why `isConfigured` checks **relayUrl
+  only**). **`strength` semantics (per Stability's docs): amount of TRANSFORMATION — 0 ≈ clone
+  the input, 1 ≈ ignore it.** The original hardcoded 0.65 produced an unrecognizable first
+  track for the owner; since v23 the ⚙ panel has a "faithfulness" slider (`#aiStrength`,
+  range 0.2–0.9, `DEFAULT_STRENGTH = 0.5`, persisted in config as `strength`). Lower = closer
+  to the performed beat.
 - Human error mapping: network → "Couldn't reach the relay…"; 401/403 → key rejected; 402 →
   out of credits (top up at platform.stability.ai); other → `Generation failed (HTTP n)`;
   empty blob → "returned empty audio".
@@ -389,7 +395,9 @@ mic-less keyboard takes) and the dormant "Tune to my voice" k-NN profile
 | v18 | Visible kit chips + one-tap WAV export (later re-hidden in v21). |
 | v19 | First ✨: Stability audio-to-audio + relay (owner: "make it an AI tool… one take only"). |
 | v20 | Owner: "use an LLM API" → Claude composer (compose JSON → kit performs); relay deleted. |
-| v21 (current) | Owner: "there are Spotify playlists of AI music… I want real AI audio, high fidelity, three buttons" → Stable Audio 2.5 + wav out as the ✨ action; relay restored; composer kept dormant; UI pared to Record/Original/Generate. |
+| v21 | Owner: "there are Spotify playlists of AI music… I want real AI audio, high fidelity, three buttons" → Stable Audio 2.5 + wav out as the ✨ action; relay restored; composer kept dormant; UI pared to Record/Original/Generate. |
+| v22 | Gitignored `js/local-config.js` mechanism: hardcode the owner's relay locally, never committed. |
+| v23 (current) | Owner's first real generation "sounded nothing like my beatboxing" (and burned the free credits) → ▶ Drums re-enabled as the free triage step (hear exactly what ✨ uploads), faithfulness slider added (strength 0.2–0.9, default lowered 0.65→0.5), READY_HINT teaches the triage flow. |
 
 ## 14. Hard-won lessons (bugs already fought — don't reintroduce)
 

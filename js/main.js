@@ -65,6 +65,7 @@ const els = {
   aiSettings: document.getElementById('aiSettings'),
   aiPanel: document.getElementById('aiPanel'),
   aiPrompt: document.getElementById('aiPrompt'),
+  aiStrength: document.getElementById('aiStrength'),
   aiRelay: document.getElementById('aiRelay'),
   aiKey: document.getElementById('aiKey'),
   aiGenerate: document.getElementById('aiGenerate'),
@@ -669,8 +670,9 @@ function invalidateOriginalUrl() {
   rawTakeGain = 1;
 }
 
-// the standing call-to-action once a take exists
-const READY_HINT = '✨ Generate for the AI track, ▶ Original for your take';
+// the standing call-to-action once a take exists. ▶ Drums plays the exact
+// audio ✨ uploads, so a bad AI result can be triaged for free.
+const READY_HINT = '▶ Drums = what ✨ Generate sends to the AI · ▶ Original = your take';
 
 function onOriginalEnded() {
   originalPlaying = false;
@@ -903,19 +905,25 @@ function playAiTake() {
 function openAiPanel() {
   const cfg = loadNeuralConfig();
   if (els.aiPrompt && !els.aiPrompt.value) els.aiPrompt.value = cfg.prompt;
+  if (els.aiStrength && !els.aiStrength.dataset.touched) els.aiStrength.value = String(cfg.strength);
   if (els.aiRelay && !els.aiRelay.value) els.aiRelay.value = cfg.relayUrl;
   if (els.aiKey && !els.aiKey.value) els.aiKey.value = cfg.apiKey;
   els.aiPanel.hidden = !els.aiPanel.hidden;
+}
+if (els.aiStrength) {
+  els.aiStrength.addEventListener('input', () => { els.aiStrength.dataset.touched = '1'; });
 }
 
 async function runAiGenerate() {
   if (aiBusy || !recorder || !recorder.events.length) return;
   if (recorder.state === 'recording' || recorder.state === 'armed' || calibration) return;
   const stored = loadNeuralConfig();
+  const slider = els.aiStrength ? parseFloat(els.aiStrength.value) : NaN;
   const cfg = {
     prompt: (els.aiPrompt?.value || '').trim() || stored.prompt,
     relayUrl: (els.aiRelay?.value || '').trim() || stored.relayUrl,
     apiKey: (els.aiKey?.value || '').trim() || stored.apiKey,
+    strength: Number.isFinite(slider) && els.aiStrength?.dataset.touched ? slider : stored.strength,
   };
   saveNeuralConfig(cfg);
   if (!isConfigured(cfg)) {
@@ -945,7 +953,7 @@ async function runAiGenerate() {
     const { blob, type } = await generateAudio({
       wav,
       prompt: cfg.prompt,
-      strength: DEFAULT_STRENGTH,
+      strength: cfg.strength ?? DEFAULT_STRENGTH,
       durationSec: dur * passes,
       relayUrl: cfg.relayUrl,
       apiKey: cfg.apiKey,

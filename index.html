@@ -25,14 +25,14 @@
       <p id="statusText" class="status" aria-live="polite">Press Record and beatbox — “B” kick · “Pss” snare · “Ts” hi-hat</p>
     </section>
 
-    <section class="big-controls">
+    <!-- ▶ Drums is back on purpose: it plays the sample-kit conversion —
+         EXACTLY what ✨ uploads to the AI — so a bad AI track can be
+         diagnosed for free (bad conversion vs AI straying) before
+         spending credits on another generation -->
+    <section class="big-controls three">
       <button id="recBtn" class="big-btn rec">● Record</button>
       <button id="origBtn" class="big-btn orig" disabled>▶ Original</button>
-      <!-- ▶ Drums (the sample-kit conversion) is hidden while the UI is
-           pared to Record / Original / AI — it still renders internally as
-           the AI's input. Uncomment to bring direct playback back:
       <button id="playBtn" class="big-btn play" disabled>▶ Drums</button>
-      -->
     </section>
 
     <!-- Hidden with the minimal three-button UI (uncomment to restore):
@@ -63,6 +63,10 @@
       <div id="aiPanel" class="ai-panel" hidden>
         <label class="ai-field">Style prompt
           <input id="aiPrompt" type="text" autocomplete="off" />
+        </label>
+        <label class="ai-field">Faithfulness — how far the AI may stray from your beat
+          <input id="aiStrength" type="range" min="0.2" max="0.9" step="0.05" />
+          <span class="ai-strength-labels"><span>stick to my beat</span><span>reinvent it</span></span>
         </label>
         <label class="ai-field">Relay URL
           <input id="aiRelay" type="text" autocomplete="off" placeholder="https://your-relay.workers.dev" />

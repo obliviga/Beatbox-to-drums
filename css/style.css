@@ -450,6 +450,13 @@ input[type="number"]:disabled { opacity: 0.4; }
   padding: 9px 10px;
   font-size: 0.9rem;
 }
+.ai-field input[type='range'] { padding: 0; accent-color: #c48cff; }
+.ai-strength-labels {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.72rem;
+  color: var(--text-dim);
+}
 .ai-actions {
   display: grid;
   grid-template-columns: 1fr 1fr;
