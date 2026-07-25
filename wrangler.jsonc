@@ -1,0 +1,11 @@
+// Deploy config for the ✨ relay (worker/relay.js) — used by `npx wrangler deploy`,
+// either locally or via Cloudflare's Git-connected "Import a repository" flow
+// (project name must be `beatbox-relay` to match `name` below).
+//
+// This deploys ONLY the tiny CORS relay. The app itself is a static site served
+// by GitHub Pages from main — Cloudflare never builds or hosts the app.
+{
+  "name": "beatbox-relay",
+  "main": "worker/relay.js",
+  "compatibility_date": "2026-07-01"
+}
